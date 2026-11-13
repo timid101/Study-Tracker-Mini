@@ -90,6 +90,8 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
     var showAddSubjectDialog by remember { mutableStateOf(false) }
     var editingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
     var loggingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
+    var deletingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
+    var confirmResetMode by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.statusBanner) {
         state.statusBanner?.let {
@@ -159,7 +161,7 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
                     onAddSubjectClick = { showAddSubjectDialog = true },
                     onEditSubjectClick = { editingSummary = it },
                     onLogManualClick = { loggingSummary = it },
-                    onDeleteSubjectClick = { viewModel.deleteSubject(it.subjectId) },
+                    onDeleteSubjectClick = { deletingSummary = it },
                     onJumpToTimerClick = { summary ->
                         viewModel.startSubjectTimer(
                             summary = summary,
@@ -179,7 +181,9 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
                     viewModel = viewModel,
                     onBackupJson = { createJsonLauncher.launch("study_tracker_backup_${LocalDate.now()}.json") },
                     onRestoreJson = { openJsonLauncher.launch(arrayOf("application/json", "*/*")) },
-                    onExportCsv = { createCsvLauncher.launch("study_progress_${LocalDate.now()}.csv") }
+                    onExportCsv = { createCsvLauncher.launch("study_progress_${LocalDate.now()}.csv") },
+                    onRequestResetHours = { confirmResetMode = "RESET_HOURS" },
+                    onRequestDeleteAll = { confirmResetMode = "DELETE_ALL" }
                 )
             }
         }
@@ -215,9 +219,87 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
         ManualLogDialog(
             summary = item,
             onDismiss = { loggingSummary = null },
-            onConfirm = { mins, note ->
+            onAddMinutes = { mins, note ->
                 viewModel.logManualSession(item.subjectId, mins, note)
                 loggingSummary = null
+            },
+            onSubtractMinutes = { mins ->
+                val currentMins = (item.totalSeconds / 60L).toInt()
+                val newTotalMins = (currentMins - mins).coerceAtLeast(0)
+                viewModel.resetSubjectProgress(item.subjectId)
+                if (newTotalMins > 0) {
+                    viewModel.logManualSession(item.subjectId, newTotalMins, "Adjusted study time (-${mins}m)")
+                }
+                loggingSummary = null
+            },
+            onResetSubjectZero = {
+                viewModel.resetSubjectProgress(item.subjectId)
+                loggingSummary = null
+            }
+        )
+    }
+
+    deletingSummary?.let { item ->
+        AlertDialog(
+            onDismissRequest = { deletingSummary = null },
+            title = { Text("Delete ${item.name}?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Are you sure you want to delete "${item.name}" and all of its logged study hours? This cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteSubject(item.subjectId)
+                        deletingSummary = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444), contentColor = Color.White)
+                ) {
+                    Text("Delete Subject", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingSummary = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    confirmResetMode?.let { mode ->
+        val isDeleteAll = mode == "DELETE_ALL"
+        AlertDialog(
+            onDismissRequest = { confirmResetMode = null },
+            title = {
+                Text(
+                    text = if (isDeleteAll) "Delete All Subjects?" else "Reset All Studied Hours to 0?",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = if (isDeleteAll) {
+                        "This will permanently delete all your courses and study history."
+                    } else {
+                        "This will reset completed hours to 0h 0m across all subjects while keeping your subject list and target hours."
+                    }
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (isDeleteAll) viewModel.clearAllSubjectsAndData()
+                        else viewModel.resetAllProgressKeepSubjects()
+                        confirmResetMode = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444), contentColor = Color.White)
+                ) {
+                    Text("Confirm", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmResetMode = null }) {
+                    Text("Cancel")
+                }
             }
         )
     }
@@ -825,7 +907,9 @@ private fun GeneralSettingsTab(
     viewModel: StudyTrackerViewModel,
     onBackupJson: () -> Unit,
     onRestoreJson: () -> Unit,
-    onExportCsv: () -> Unit
+    onExportCsv: () -> Unit,
+    onRequestResetHours: () -> Unit,
+    onRequestDeleteAll: () -> Unit
 ) {
     var defaultMode by remember(state.prefs.defaultMode) { mutableStateOf(state.prefs.defaultMode) }
     var defaultMinsText by remember(state.prefs.defaultCountdownMinutes) {
@@ -968,13 +1052,13 @@ private fun GeneralSettingsTab(
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Reset & Data Controls", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF87171))
                     OutlinedButton(
-                        onClick = { viewModel.resetAllProgressKeepSubjects() },
+                        onClick = onRequestResetHours,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Reset Studied Hours to 0 (Keep Subjects)", color = Color(0xFFFBBF24))
                     }
                     OutlinedButton(
-                        onClick = { viewModel.clearAllSubjectsAndData() },
+                        onClick = onRequestDeleteAll,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Delete All Subjects & Start Fresh", color = Color(0xFFF87171))
@@ -1108,20 +1192,27 @@ private fun AddOrEditSubjectDialog(
 private fun ManualLogDialog(
     summary: SubjectStudySummary,
     onDismiss: () -> Unit,
-    onConfirm: (minutes: Int, note: String) -> Unit
+    onAddMinutes: (minutes: Int, note: String) -> Unit,
+    onSubtractMinutes: (minutes: Int) -> Unit,
+    onResetSubjectZero: () -> Unit
 ) {
-    var minutesText by remember { mutableStateOf("60") }
+    var minutesText by remember { mutableStateOf("30") }
     var noteText by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Log Study Time — ${summary.name}", fontWeight = FontWeight.Bold) },
+        title = { Text("Adjust Study Time — ${summary.name}", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Currently Completed: ${formatDurationHoursMinutes(summary.totalSeconds)}",
+                    fontSize = 12.sp,
+                    color = Color(0xFF10B981)
+                )
                 OutlinedTextField(
                     value = minutesText,
                     onValueChange = { minutesText = it },
-                    label = { Text("Minutes Studied (e.g. 60 = 1 hour)") },
+                    label = { Text("Minutes (e.g. 30 or 60)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1132,16 +1223,32 @@ private fun ManualLogDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                OutlinedButton(
+                    onClick = onResetSubjectZero,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Reset This Subject to 0h 0m", color = Color(0xFFF87171), fontSize = 12.sp)
+                }
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    val mins = minutesText.toIntOrNull()?.coerceAtLeast(1) ?: 30
-                    onConfirm(mins, noteText)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val mins = minutesText.toIntOrNull()?.coerceAtLeast(1) ?: 30
+                        onSubtractMinutes(mins)
+                    }
+                ) {
+                    Text("- Subtract", color = Color(0xFFFBBF24), fontSize = 12.sp)
                 }
-            ) {
-                Text("Add to Completed Time")
+                Button(
+                    onClick = {
+                        val mins = minutesText.toIntOrNull()?.coerceAtLeast(1) ?: 30
+                        onAddMinutes(mins, noteText)
+                    }
+                ) {
+                    Text("+ Add Time", fontSize = 12.sp)
+                }
             }
         },
         dismissButton = {
