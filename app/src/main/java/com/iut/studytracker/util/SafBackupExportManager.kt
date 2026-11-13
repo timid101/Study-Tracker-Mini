@@ -218,10 +218,11 @@ object SafBackupExportManager {
                             val sub = subjectsById[s.subjectId]
                             val mins = String.format("%.1f", s.durationSeconds / 60.0)
                             val hrs = String.format("%.2f", s.durationSeconds / 3600.0)
-                            val safeTopic = s.topicStudied.replace(""", """")
-                            val safeNotes = s.notes.replace(""", """")
-                            val safeName = (sub?.name ?: "Unknown").replace(""", """")
-                            writer.write("${s.id},${s.dateIso},"${sub?.code ?: "N/A"}","$safeName",${s.mode.name},$mins,$hrs,"$safeTopic",${s.focusRating},"$safeNotes"\n")
+                            val safeTopic = s.topicStudied.replace("\"", "\"\"")
+                            val safeNotes = s.notes.replace("\"", "\"\"")
+                            val safeName = (sub?.name ?: "Unknown").replace("\"", "\"\"")
+                            val safeCode = (sub?.code ?: "N/A").replace("\"", "\"\"")
+                            writer.write("${s.id},${s.dateIso},\"$safeCode\",\"$safeName\",${s.mode.name},$mins,$hrs,\"$safeTopic\",${s.focusRating},\"$safeNotes\"\n")
                         }
                     }
                 } ?: error("Unable to open CSV output stream")
