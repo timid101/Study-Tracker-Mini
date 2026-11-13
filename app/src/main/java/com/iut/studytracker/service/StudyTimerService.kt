@@ -1,6 +1,7 @@
 package com.iut.studytracker.service
 
 import android.app.Notification
+import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
@@ -10,6 +11,8 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
 import androidx.core.app.NotificationCompat
 import com.iut.studytracker.MainActivity
 import com.iut.studytracker.R
@@ -63,7 +66,7 @@ class StudyTimerService : Service() {
             }
             ACTION_PAUSE -> pauseTimer()
             ACTION_RESUME -> resumeTimer()
-            ACTION_STOP_AND_SAVE -> stopAndSaveSession()
+            ACTION_STOP_AND_SAVE -> stopAndSaveSession(completedByTarget = false)
             ACTION_DISCARD -> discardSession()
         }
         return START_STICKY
@@ -138,8 +141,14 @@ class StudyTimerService : Service() {
                 _timerState.value = next
                 updateNotification(next)
 
-                if (current.mode == TimerMode.POMODORO && current.targetSeconds > 0L && totalElapsed >= current.targetSeconds) {
-                    stopAndSaveSession()
+                // Refresh Home Screen Widget every 60 seconds while studying
+                if (totalElapsed > 0L && totalElapsed % 60L == 0L) {
+                    StudyTrackerWidgetProvider.updateAllWidgets(applicationContext)
+                }
+
+                // Auto-complete when countdown limit or remaining subject target is reached
+                if (current.targetSeconds > 0L && totalElapsed >= current.targetSeconds) {
+                    stopAndSaveSession(completedByTarget = true)
                     break
                 }
                 delay(1000L)
@@ -147,7 +156,7 @@ class StudyTimerService : Service() {
         }
     }
 
-    private fun stopAndSaveSession() {
+    private fun stopAndSaveSession(completedByTarget: Boolean) {
         val current = _timerState.value
         tickerJob?.cancel()
         val finalSeconds = if (current.isPaused) {
@@ -171,7 +180,7 @@ class StudyTimerService : Service() {
                         mode = current.mode,
                         topicStudied = current.topicStudied.ifBlank { "Timer Study Session" },
                         focusRating = 5,
-                        notes = "Recorded via Subject Timer",
+                        notes = if (completedByTarget) "Completed target countdown" else "Recorded via Subject Timer",
                         dateIso = LocalDate.now().toString()
                     )
                 )
@@ -180,9 +189,53 @@ class StudyTimerService : Service() {
             StudyTrackerWidgetProvider.updateAllWidgets(applicationContext)
         }
 
+        if (completedByTarget) {
+            triggerCompletionAlert(current.subjectName, finalSeconds)
+        }
+
         _timerState.value = ActiveTimerSnapshot()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun triggerCompletionAlert(subjectName: String, durationSeconds: Long) {
+        runCatching {
+            @Suppress("DEPRECATION")
+            val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0L, 350L, 150L, 450L), -1))
+        }
+
+        runCatching {
+            val manager = getSystemService(NotificationManager::class.java)
+            val alertChannel = NotificationChannel(
+                COMPLETE_CHANNEL_ID,
+                "Study Timer Completion Alerts",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts when a countdown or study target completes"
+                enableVibration(true)
+            }
+            manager.createNotificationChannel(alertChannel)
+
+            val openIntent = PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val mins = (durationSeconds / 60L).coerceAtLeast(1L)
+            val alertNotification = NotificationCompat.Builder(this, COMPLETE_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_timer_notification)
+                .setContentTitle("Study Session Complete! • $subjectName")
+                .setContentText("Saved ${mins}m to your completed study progress.")
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(openIntent)
+                .build()
+
+            manager.notify(COMPLETE_NOTIFICATION_ID, alertNotification)
+        }
     }
 
     private fun discardSession() {
@@ -271,6 +324,8 @@ class StudyTimerService : Service() {
 
     companion object {
         const val NOTIFICATION_ID = 1001
+        const val COMPLETE_NOTIFICATION_ID = 1002
+        const val COMPLETE_CHANNEL_ID = "study_timer_complete_alert_channel"
         const val PREFS_NAME = "active_study_timer_prefs"
 
         const val ACTION_START = "com.iut.studytracker.ACTION_START"
