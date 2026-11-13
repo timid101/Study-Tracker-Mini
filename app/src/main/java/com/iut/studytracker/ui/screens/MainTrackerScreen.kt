@@ -244,7 +244,7 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
             onDismissRequest = { deletingSummary = null },
             title = { Text("Delete ${item.name}?", fontWeight = FontWeight.Bold) },
             text = {
-                Text("Are you sure you want to delete "${item.name}" and all of its logged study hours? This cannot be undone.")
+                Text("Are you sure you want to delete '${item.name}' and all of its logged study hours? This cannot be undone.")
             },
             confirmButton = {
                 Button(
