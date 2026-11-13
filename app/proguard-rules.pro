@@ -1,2 +1,3 @@
 -keep class com.iut.studytracker.data.** { *; }
+-keep class com.iut.studytracker.widget.** { *; }
 -keepattributes *Annotation*

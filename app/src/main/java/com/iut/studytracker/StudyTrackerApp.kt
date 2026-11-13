@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import com.iut.studytracker.data.StudyTrackerDatabase
+import com.iut.studytracker.widget.StudyTrackerWidgetProvider
 
 class StudyTrackerApp : Application() {
     val database: StudyTrackerDatabase by lazy { StudyTrackerDatabase.getInstance(this) }
@@ -11,6 +12,7 @@ class StudyTrackerApp : Application() {
     override fun onCreate() {
         super.onCreate()
         createTimerNotificationChannel()
+        StudyTrackerWidgetProvider.updateAllWidgets(this)
     }
 
     private fun createTimerNotificationChannel() {

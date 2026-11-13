@@ -35,7 +35,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Offline academic study stopwatch and Pomodoro focus timer with persistent lock-screen controls" />
+                android:value="Offline study stopwatch and countdown timer with persistent lock-screen controls" />
         </service>
 
         <receiver
@@ -46,6 +46,20 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
+        </receiver>
+
+        <!-- Home Screen AppWidget: Shows Courses & Target Completion Percentage -->
+        <receiver
+            android:name=".widget.StudyTrackerWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_title">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.iut.studytracker.ACTION_REFRESH_WIDGET" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/study_tracker_widget_info" />
         </receiver>
 
     </application>

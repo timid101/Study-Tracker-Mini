@@ -16,6 +16,7 @@ import com.iut.studytracker.R
 import com.iut.studytracker.StudyTrackerApp
 import com.iut.studytracker.data.StudySessionEntity
 import com.iut.studytracker.data.TimerMode
+import com.iut.studytracker.widget.StudyTrackerWidgetProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,11 +32,11 @@ import java.time.LocalDate
 data class ActiveTimerSnapshot(
     val isRunning: Boolean = false,
     val isPaused: Boolean = false,
-    val subjectId: Long = 1L,
-    val subjectName: String = "CEE 4311",
+    val subjectId: Long = 0L,
+    val subjectName: String = "",
     val topicStudied: String = "",
-    val mode: TimerMode = TimerMode.POMODORO,
-    val targetSeconds: Long = 25 * 60L,
+    val mode: TimerMode = TimerMode.STOPWATCH,
+    val targetSeconds: Long = 0L,
     val elapsedSeconds: Long = 0L,
     val sessionStartEpochMs: Long = 0L
 )
@@ -53,11 +54,11 @@ class StudyTimerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                val subjectId = intent.getLongExtra(EXTRA_SUBJECT_ID, 1L)
+                val subjectId = intent.getLongExtra(EXTRA_SUBJECT_ID, 0L)
                 val subjectName = intent.getStringExtra(EXTRA_SUBJECT_NAME) ?: "Study Session"
                 val topic = intent.getStringExtra(EXTRA_TOPIC) ?: ""
-                val modeName = intent.getStringExtra(EXTRA_MODE) ?: TimerMode.POMODORO.name
-                val targetSec = intent.getLongExtra(EXTRA_TARGET_SECONDS, 25 * 60L)
+                val modeName = intent.getStringExtra(EXTRA_MODE) ?: TimerMode.STOPWATCH.name
+                val targetSec = intent.getLongExtra(EXTRA_TARGET_SECONDS, 0L)
                 startNewSession(subjectId, subjectName, topic, TimerMode.valueOf(modeName), targetSec)
             }
             ACTION_PAUSE -> pauseTimer()
@@ -137,7 +138,7 @@ class StudyTimerService : Service() {
                 _timerState.value = next
                 updateNotification(next)
 
-                if (current.mode == TimerMode.POMODORO && totalElapsed >= current.targetSeconds) {
+                if (current.mode == TimerMode.POMODORO && current.targetSeconds > 0L && totalElapsed >= current.targetSeconds) {
                     stopAndSaveSession()
                     break
                 }
@@ -149,13 +150,18 @@ class StudyTimerService : Service() {
     private fun stopAndSaveSession() {
         val current = _timerState.value
         tickerJob?.cancel()
-        val finalSeconds = current.elapsedSeconds.coerceAtLeast(1L)
+        val finalSeconds = if (current.isPaused) {
+            current.elapsedSeconds
+        } else {
+            val delta = (SystemClock.elapsedRealtime() - lastResumeRealtimeMs) / 1000L
+            (baseElapsedSeconds + delta).coerceAtLeast(current.elapsedSeconds)
+        }
         val endEpoch = System.currentTimeMillis()
         val startEpoch = if (current.sessionStartEpochMs > 0L) current.sessionStartEpochMs else (endEpoch - finalSeconds * 1000L)
 
         val app = application as StudyTrackerApp
         serviceScope.launch(Dispatchers.IO) {
-            if (finalSeconds >= 10L) {
+            if (current.subjectId > 0L && finalSeconds >= 1L) {
                 app.database.dao().insertSession(
                     StudySessionEntity(
                         subjectId = current.subjectId,
@@ -163,14 +169,15 @@ class StudyTimerService : Service() {
                         endTimeEpochMs = endEpoch,
                         durationSeconds = finalSeconds,
                         mode = current.mode,
-                        topicStudied = current.topicStudied.ifBlank { "Focused Study Block" },
+                        topicStudied = current.topicStudied.ifBlank { "Timer Study Session" },
                         focusRating = 5,
-                        notes = "Recorded via Foreground Timer",
+                        notes = "Recorded via Subject Timer",
                         dateIso = LocalDate.now().toString()
                     )
                 )
             }
             clearPersistedState()
+            StudyTrackerWidgetProvider.updateAllWidgets(applicationContext)
         }
 
         _timerState.value = ActiveTimerSnapshot()
@@ -192,7 +199,7 @@ class StudyTimerService : Service() {
     }
 
     private fun buildNotification(snapshot: ActiveTimerSnapshot): Notification {
-        val displaySeconds = if (snapshot.mode == TimerMode.POMODORO) {
+        val displaySeconds = if (snapshot.mode == TimerMode.POMODORO && snapshot.targetSeconds > 0L) {
             (snapshot.targetSeconds - snapshot.elapsedSeconds).coerceAtLeast(0L)
         } else {
             snapshot.elapsedSeconds
@@ -200,11 +207,7 @@ class StudyTimerService : Service() {
         val hrs = displaySeconds / 3600
         val mins = (displaySeconds % 3600) / 60
         val secs = displaySeconds % 60
-        val formattedTime = if (hrs > 0) {
-            String.format("%02d:%02d:%02d", hrs, mins, secs)
-        } else {
-            String.format("%02d:%02d", mins, secs)
-        }
+        val formattedTime = String.format("%02d:%02d:%02d", hrs, mins, secs)
 
         val openIntent = PendingIntent.getActivity(
             this,
@@ -229,16 +232,16 @@ class StudyTimerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val statusLabel = if (snapshot.isPaused) "PAUSED" else snapshot.mode.name
+        val statusLabel = if (snapshot.isPaused) "PAUSED" else "STUDYING"
         return NotificationCompat.Builder(this, StudyTrackerApp.TIMER_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_timer_notification)
             .setContentTitle("${snapshot.subjectName} • $formattedTime")
-            .setContentText("$statusLabel — ${snapshot.topicStudied.ifBlank { "Stay focused!" }}")
+            .setContentText("$statusLabel — ${snapshot.topicStudied.ifBlank { "Tap to view subject progress" }}")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openIntent)
             .addAction(0, if (snapshot.isPaused) "Resume" else "Pause", toggleIntent)
-            .addAction(0, "Finish & Save", saveIntent)
+            .addAction(0, "Save & Stop", saveIntent)
             .build()
     }
 

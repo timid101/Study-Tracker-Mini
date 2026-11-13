@@ -11,14 +11,14 @@ enum class TimerMode { STOPWATCH, POMODORO }
 enum class TaskPriority { HIGH, MEDIUM, LOW }
 enum class TaskCategory { ASSIGNMENT, LAB_REPORT, CLASS_TEST, EXAM_PREP, PROJECT }
 
-// 1. Subject / Course Entity
+// 1. Subject / Course Entity (User defines their own courses and target study hours)
 @Entity(tableName = "subjects")
 data class SubjectEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val code: String,
     val name: String,
     val colorHex: String,
-    val targetHoursPerWeek: Float = 6.0f,
+    val targetHoursPerWeek: Float = 10.0f,
     val credits: Float = 3.0f,
     val isArchived: Boolean = false,
     val createdAtEpochMs: Long = System.currentTimeMillis()
@@ -43,14 +43,14 @@ data class StudySessionEntity(
     val startTimeEpochMs: Long,
     val endTimeEpochMs: Long,
     val durationSeconds: Long,
-    val mode: TimerMode = TimerMode.POMODORO,
+    val mode: TimerMode = TimerMode.STOPWATCH,
     val topicStudied: String = "",
     val focusRating: Int = 5,
     val notes: String = "",
-    val dateIso: String // YYYY-MM-DD
+    val dateIso: String
 )
 
-// 3. Task / Assignment / Lab Report Entity
+// 3. Task Entity
 @Entity(
     tableName = "tasks",
     foreignKeys = [
@@ -74,7 +74,7 @@ data class TaskItemEntity(
     val completedAtEpochMs: Long? = null
 )
 
-// 4. Exam / Quiz / Class Test Schedule Entity
+// 4. Exam Schedule Entity
 @Entity(
     tableName = "exams",
     foreignKeys = [
@@ -100,12 +100,12 @@ data class ExamScheduleEntity(
 // 5. Daily Study Goal Entity
 @Entity(tableName = "daily_goals")
 data class DailyGoalEntity(
-    @PrimaryKey val dateIso: String, // YYYY-MM-DD
+    @PrimaryKey val dateIso: String,
     val targetMinutes: Int = 240,
     val notes: String = ""
 )
 
-// 6. Quick Formula / Study Note Entity
+// 6. Study Note Entity
 @Entity(
     tableName = "study_notes",
     foreignKeys = [
@@ -126,7 +126,7 @@ data class StudyNoteEntity(
     val updatedAtEpochMs: Long = System.currentTimeMillis()
 )
 
-// 7. Pomodoro & Focus Timer Preset Entity
+// 7. Timer Preset Entity
 @Entity(tableName = "timer_presets")
 data class TimerPresetEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -146,7 +146,18 @@ data class SubjectStudySummary(
     val targetHoursPerWeek: Float,
     val totalSeconds: Long,
     val sessionCount: Int
-)
+) {
+    val targetSeconds: Long
+        get() = (targetHoursPerWeek.coerceAtLeast(0.1f) * 3600f).toLong()
+
+    val remainingSeconds: Long
+        get() = (targetSeconds - totalSeconds).coerceAtLeast(0L)
+
+    val completionPercent: Float
+        get() = if (targetSeconds > 0L) {
+            ((totalSeconds.toFloat() / targetSeconds.toFloat()) * 100f).coerceIn(0f, 100f)
+        } else 0f
+}
 
 data class DailyStudyTotal(
     val dateIso: String,

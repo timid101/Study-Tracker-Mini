@@ -3,7 +3,10 @@ package com.iut.studytracker.ui.screens
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,22 +14,29 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Book
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
@@ -34,7 +44,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -45,24 +57,35 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.iut.studytracker.data.TaskCategory
-import com.iut.studytracker.data.TaskPriority
+import com.iut.studytracker.data.SubjectStudySummary
 import com.iut.studytracker.data.TimerMode
-import com.iut.studytracker.ui.components.ActivityHeatmap365
-import com.iut.studytracker.ui.components.SubjectDonutChart
+import com.iut.studytracker.ui.components.formatClockHhMmSs
+import com.iut.studytracker.ui.components.formatDurationHoursMinutes
+import com.iut.studytracker.ui.components.parseHexColor
 import com.iut.studytracker.viewmodel.StudyTrackerUiState
 import com.iut.studytracker.viewmodel.StudyTrackerViewModel
 import java.time.LocalDate
+import kotlin.math.roundToInt
+
+private val SUBJECT_COLOR_PALETTE = listOf(
+    "#10B981", "#3B82F6", "#F59E0B", "#8B5CF6", "#EC4899", "#06B6D4", "#EF4444", "#84CC16"
+)
 
 @Composable
 fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
     val state by viewModel.uiState.collectAsState()
     var selectedTab by remember { mutableIntStateOf(0) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Dialog states
+    var showAddSubjectDialog by remember { mutableStateOf(false) }
+    var editingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
+    var loggingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
 
     LaunchedEffect(state.statusBanner) {
         state.statusBanner?.let {
@@ -86,36 +109,24 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            NavigationBar(containerColor = Color(0xFF080B11)) {
+            NavigationBar(containerColor = Color(0xFF070A10)) {
                 NavigationBarItem(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Default.Dashboard, contentDescription = "Overview") },
-                    label = { Text("Dashboard") }
+                    icon = { Icon(Icons.Default.Book, contentDescription = "Subjects") },
+                    label = { Text("Subjects") }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Default.Timer, contentDescription = "Focus Timer") },
-                    label = { Text("Timer") }
+                    icon = { Icon(Icons.Default.Timer, contentDescription = "Subject Timers") },
+                    label = { Text("Timers") }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Default.CheckCircle, contentDescription = "Tasks") },
-                    label = { Text("Coursework") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 3,
-                    onClick = { selectedTab = 3 },
-                    icon = { Icon(Icons.Default.Analytics, contentDescription = "Analytics") },
-                    label = { Text("Analytics") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 4,
-                    onClick = { selectedTab = 4 },
-                    icon = { Icon(Icons.Default.CloudDownload, contentDescription = "Backup") },
-                    label = { Text("Backup") }
+                    icon = { Icon(Icons.Default.Settings, contentDescription = "General Settings") },
+                    label = { Text("Settings") }
                 )
             }
         }
@@ -128,253 +139,590 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
             when (selectedTab) {
-                0 -> DashboardTab(state, viewModel)
-                1 -> FocusTimerTab(state, viewModel)
-                2 -> CourseworkTab(state, viewModel)
-                3 -> AnalyticsTab(state)
-                4 -> BackupExportTab(
+                0 -> SubjectsFirstInterfaceTab(
+                    state = state,
+                    onAddSubjectClick = { showAddSubjectDialog = true },
+                    onEditSubjectClick = { editingSummary = it },
+                    onLogManualClick = { loggingSummary = it },
+                    onDeleteSubjectClick = { viewModel.deleteSubject(it.subjectId) },
+                    onJumpToTimerClick = { summary ->
+                        viewModel.startSubjectTimer(
+                            summary = summary,
+                            mode = state.prefs.defaultMode,
+                            countdownMinutes = state.prefs.defaultCountdownMinutes
+                        )
+                        selectedTab = 1
+                    }
+                )
+                1 -> SubjectTimersTab(
+                    state = state,
+                    viewModel = viewModel,
+                    onAddSubjectClick = { showAddSubjectDialog = true }
+                )
+                2 -> GeneralSettingsTab(
+                    state = state,
+                    viewModel = viewModel,
                     onBackupJson = { createJsonLauncher.launch("study_tracker_backup_${LocalDate.now()}.json") },
                     onRestoreJson = { openJsonLauncher.launch(arrayOf("application/json", "*/*")) },
-                    onExportCsv = { createCsvLauncher.launch("study_sessions_${LocalDate.now()}.csv") }
+                    onExportCsv = { createCsvLauncher.launch("study_progress_${LocalDate.now()}.csv") }
                 )
+            }
+        }
+    }
+
+    if (showAddSubjectDialog) {
+        AddOrEditSubjectDialog(
+            initialSummary = null,
+            onDismiss = { showAddSubjectDialog = false },
+            onConfirm = { code, name, targetHrs, colorHex ->
+                viewModel.addSubject(code, name, targetHrs, colorHex)
+                showAddSubjectDialog = false
+            }
+        )
+    }
+
+    editingSummary?.let { item ->
+        AddOrEditSubjectDialog(
+            initialSummary = item,
+            onDismiss = { editingSummary = null },
+            onConfirm = { code, name, targetHrs, colorHex ->
+                viewModel.updateSubjectTargetAndName(item.subjectId, code, name, targetHrs, colorHex)
+                editingSummary = null
+            }
+        )
+    }
+
+    loggingSummary?.let { item ->
+        ManualLogDialog(
+            summary = item,
+            onDismiss = { loggingSummary = null },
+            onConfirm = { mins, note ->
+                viewModel.logManualSession(item.subjectId, mins, note)
+                loggingSummary = null
+            }
+        )
+    }
+}
+
+// =========================================================================
+// TAB 1: FIRST INTERFACE — SUBJECTS LIST, TARGETS, COMPLETED & REMAINING
+// =========================================================================
+@Composable
+private fun SubjectsFirstInterfaceTab(
+    state: StudyTrackerUiState,
+    onAddSubjectClick: () -> Unit,
+    onEditSubjectClick: (SubjectStudySummary) -> Unit,
+    onLogManualClick: (SubjectStudySummary) -> Unit,
+    onDeleteSubjectClick: (SubjectStudySummary) -> Unit,
+    onJumpToTimerClick: (SubjectStudySummary) -> Unit
+) {
+    val totalStudiedSec = state.subjectSummaries.sumOf { it.totalSeconds }
+    val totalTargetSec = state.subjectSummaries.sumOf { it.targetSeconds }
+    val totalRemainingSec = (totalTargetSec - totalStudiedSec).coerceAtLeast(0L)
+    val overallPct = if (totalTargetSec > 0L) {
+        ((totalStudiedSec.toDouble() / totalTargetSec.toDouble()) * 100.0).roundToInt().coerceIn(0, 100)
+    } else 0
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "My Subjects & Targets",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Track target hours, completed study, and remaining time",
+                        fontSize = 12.sp,
+                        color = Color(0xFF9CA3AF)
+                    )
+                }
+                Button(
+                    onClick = onAddSubjectClick,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.Black),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add Course", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
+        }
+
+        // Overall Target vs Completed Summary Banner
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Overall Target Completion", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                        Text("$overallPct%", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF10B981))
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { (overallPct / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .clip(RoundedCornerShape(4.dp)),
+                        color = Color(0xFF10B981),
+                        trackColor = Color(0xFF1F2937)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        SummaryStatColumn("Completed", formatDurationHoursMinutes(totalStudiedSec), Color(0xFF10B981))
+                        SummaryStatColumn("Total Target", formatDurationHoursMinutes(totalTargetSec), Color(0xFF38BDF8))
+                        SummaryStatColumn("Remaining", formatDurationHoursMinutes(totalRemainingSec), Color(0xFFF59E0B))
+                    }
+                }
+            }
+        }
+
+        if (state.subjectSummaries.isEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "No Courses or Subjects Added Yet",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Add your own subjects and set how many hours you want to study each subject.",
+                            fontSize = 13.sp,
+                            color = Color(0xFF9CA3AF)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = onAddSubjectClick,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.Black)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Add Your First Subject", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        } else {
+            items(state.subjectSummaries, key = { it.subjectId }) { item ->
+                val accent = parseHexColor(item.colorHex)
+                val pctInt = item.completionPercent.roundToInt().coerceIn(0, 100)
+                val titleText = if (item.code.isNotBlank()) "${item.code} — ${item.name}" else item.name
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .background(accent, CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = titleText,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                            Text(
+                                text = "$pctInt%",
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = accent
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        LinearProgressIndicator(
+                            progress = { (item.completionPercent / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp)),
+                            color = accent,
+                            trackColor = Color(0xFF1F2937)
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Completed vs Target vs Remaining Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            SummaryStatColumn(
+                                label = "Completed",
+                                value = formatDurationHoursMinutes(item.totalSeconds),
+                                valueColor = Color(0xFF10B981)
+                            )
+                            SummaryStatColumn(
+                                label = "Target Limit",
+                                value = formatDurationHoursMinutes(item.targetSeconds),
+                                valueColor = Color.White
+                            )
+                            SummaryStatColumn(
+                                label = "Remaining",
+                                value = if (item.remainingSeconds > 0L) formatDurationHoursMinutes(item.remainingSeconds) else "Goal Met!",
+                                valueColor = if (item.remainingSeconds > 0L) Color(0xFFF59E0B) else Color(0xFF10B981)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Action Buttons Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { onJumpToTimerClick(item) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Start Timer", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(
+                                    onClick = { onLogManualClick(item) },
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("+ Log Hours", fontSize = 12.sp, color = Color.White)
+                                }
+                            }
+
+                            Row {
+                                IconButton(onClick = { onEditSubjectClick(item) }) {
+                                    Icon(Icons.Default.Edit, contentDescription = "Edit Target", tint = Color(0xFF9CA3AF))
+                                }
+                                IconButton(onClick = { onDeleteSubjectClick(item) }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete Subject", tint = Color(0xFFEF4444))
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun DashboardTab(state: StudyTrackerUiState, viewModel: StudyTrackerViewModel) {
+private fun SummaryStatColumn(label: String, value: String, valueColor: Color) {
+    Column {
+        Text(text = label, fontSize = 11.sp, color = Color(0xFF9CA3AF))
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(text = value, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = valueColor)
+    }
+}
+
+// =========================================================================
+// TAB 2: HEAD OF SUBJECTS & TIMERS OF EACH SUBJECT
+// =========================================================================
+@Composable
+private fun SubjectTimersTab(
+    state: StudyTrackerUiState,
+    viewModel: StudyTrackerViewModel,
+    onAddSubjectClick: () -> Unit
+) {
+    val active = state.activeTimer
+    var selectedMode by remember { mutableStateOf(state.prefs.defaultMode) }
+    var countdownMins by remember { mutableIntStateOf(state.prefs.defaultCountdownMinutes) }
+
     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Text(
-                text = "CEE Academic Study Tracker",
+                text = "Subject Timers",
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
                 color = Color.White
             )
             Text(
-                text = "100% Offline • True AMOLED • Room SQLite",
-                fontSize = 13.sp,
+                text = "Select any subject below to run its timer and track remaining target hours",
+                fontSize = 12.sp,
                 color = Color(0xFF9CA3AF)
             )
         }
 
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                MetricCard(
-                    label = "Today's Focus",
-                    value = String.format("%.1f hrs", state.todaySeconds / 3600.0),
-                    modifier = Modifier.weight(1f)
-                )
-                MetricCard(
-                    label = "Active Streak",
-                    value = "${state.currentStreakDays} days",
-                    modifier = Modifier.weight(1f)
-                )
-                MetricCard(
-                    label = "Pending Tasks",
-                    value = "${state.tasks.count { !it.isCompleted }}",
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
+        // Mode & Countdown Duration Selector Bar
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
-                shape = RoundedCornerShape(16.dp)
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Subject Distribution", fontWeight = FontWeight.SemiBold, color = Color.White)
-                    SubjectDonutChart(summaries = state.subjectSummaries)
-                }
-            }
-        }
-
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    ActivityHeatmap365(dailyTotals = state.dailyTotals)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MetricCard(label: String, value: String, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier,
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
-        shape = RoundedCornerShape(14.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(text = label, fontSize = 11.sp, color = Color(0xFF9CA3AF))
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(text = value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
-        }
-    }
-}
-
-@Composable
-private fun FocusTimerTab(state: StudyTrackerUiState, viewModel: StudyTrackerViewModel) {
-    var selectedSubjectIndex by remember { mutableIntStateOf(0) }
-    var selectedMode by remember { mutableStateOf(TimerMode.POMODORO) }
-    var focusMinutes by remember { mutableIntStateOf(25) }
-    var topicText by remember { mutableStateOf("") }
-
-    val active = state.activeTimer
-    val displaySec = if (active.isRunning) {
-        if (active.mode == TimerMode.POMODORO) (active.targetSeconds - active.elapsedSeconds).coerceAtLeast(0L)
-        else active.elapsedSeconds
-    } else {
-        focusMinutes * 60L
-    }
-    val mm = (displaySec / 60).toString().padStart(2, '0')
-    val ss = (displaySec % 60).toString().padStart(2, '0')
-
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Foreground Focus Timer", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
-            shape = RoundedCornerShape(20.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = if (active.isRunning) active.subjectName else "Ready to Focus",
-                    color = Color(0xFF10B981),
-                    fontSize = 14.sp
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "$mm:$ss",
-                    fontSize = 56.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-
-                if (!active.isRunning) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("Timer Mode for Starting a Subject", fontSize = 12.sp, color = Color(0xFF9CA3AF))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            selected = selectedMode == TimerMode.POMODORO,
-                            onClick = { selectedMode = TimerMode.POMODORO },
-                            label = { Text("Pomodoro") }
-                        )
                         FilterChip(
                             selected = selectedMode == TimerMode.STOPWATCH,
                             onClick = { selectedMode = TimerMode.STOPWATCH },
-                            label = { Text("Stopwatch") }
+                            label = { Text("Stopwatch (Count Up)") }
                         )
                         FilterChip(
-                            selected = focusMinutes == 25,
-                            onClick = { focusMinutes = 25 },
-                            label = { Text("25m") }
-                        )
-                        FilterChip(
-                            selected = focusMinutes == 50,
-                            onClick = { focusMinutes = 50 },
-                            label = { Text("50m") }
+                            selected = selectedMode == TimerMode.POMODORO,
+                            onClick = { selectedMode = TimerMode.POMODORO },
+                            label = { Text("Countdown Limit") }
                         )
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = topicText,
-                        onValueChange = { topicText = it },
-                        label = { Text("Topic / Problem Set (e.g. Truss Indeterminacy)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = {
-                            val sub = state.subjects.getOrElse(selectedSubjectIndex) { state.subjects.firstOrNull() }
-                            if (sub != null) {
-                                viewModel.startForegroundTimer(sub, topicText, selectedMode, focusMinutes)
+                    if (selectedMode == TimerMode.POMODORO) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(25, 45, 60, 90, 120).forEach { mins ->
+                                FilterChip(
+                                    selected = countdownMins == mins,
+                                    onClick = { countdownMins = mins },
+                                    label = { Text("${mins}m") }
+                                )
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Start Lock-Screen Foreground Timer")
+                        }
                     }
+                }
+            }
+        }
+
+        // Active Running Timer Card (if any subject timer is running)
+        if (active.isRunning) {
+            item {
+                val activeSummary = state.subjectSummaries.find { it.subjectId == active.subjectId }
+                val liveStudiedSec = (activeSummary?.totalSeconds ?: 0L) + active.elapsedSeconds
+                val targetSec = activeSummary?.targetSeconds ?: 0L
+                val liveRemainingSec = (targetSec - liveStudiedSec).coerceAtLeast(0L)
+                val displaySec = if (active.mode == TimerMode.POMODORO && active.targetSeconds > 0L) {
+                    (active.targetSeconds - active.elapsedSeconds).coerceAtLeast(0L)
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        OutlinedButton(onClick = { viewModel.pauseOrResumeTimer(active.isPaused) }) {
-                            Text(if (active.isPaused) "Resume" else "Pause")
-                        }
-                        Button(onClick = { viewModel.stopAndSaveTimer() }) {
-                            Text("Finish & Save Session")
-                        }
-                    }
+                    active.elapsedSeconds
                 }
-            }
-        }
-    }
-}
 
-@Composable
-private fun CourseworkTab(state: StudyTrackerUiState, viewModel: StudyTrackerViewModel) {
-    var taskTitle by remember { mutableStateOf("") }
-    var dueDate by remember { mutableStateOf(LocalDate.now().plusDays(3).toString()) }
-
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item {
-            Text("Assignments, Lab Reports & Class Tests", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = taskTitle,
-                    onValueChange = { taskTitle = it },
-                    label = { Text("New Task / Lab Report / CT") },
-                    modifier = Modifier.weight(1f)
-                )
-                Button(
-                    onClick = {
-                        val firstSub = state.subjects.firstOrNull()?.id ?: 1L
-                        if (taskTitle.isNotBlank()) {
-                            viewModel.addTask(firstSub, taskTitle, TaskCategory.ASSIGNMENT, TaskPriority.HIGH, dueDate)
-                            taskTitle = ""
-                        }
-                    }
-                ) {
-                    Text("Add")
-                }
-            }
-        }
-
-        items(state.tasks) { task ->
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF06281E)),
+                    shape = RoundedCornerShape(20.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .border(1.dp, Color(0xFF10B981), RoundedCornerShape(20.dp))
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            checked = task.isCompleted,
-                            onCheckedChange = { viewModel.toggleTaskCompleted(task) }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = if (active.isPaused) "PAUSED • ${active.subjectName}" else "ACTIVE TIMER • ${active.subjectName}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF10B981)
                         )
-                        Column {
-                            Text(text = task.title, color = Color.White, fontWeight = FontWeight.Medium)
-                            Text(text = "Due: ${task.dueDateIso} • ${task.priority.name}", color = Color(0xFF9CA3AF), fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = formatClockHhMmSs(displaySec),
+                            fontSize = 48.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White
+                        )
+                        if (activeSummary != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Live Studied: ${formatDurationHoursMinutes(liveStudiedSec)}  •  Remaining: ${formatDurationHoursMinutes(liveRemainingSec)}",
+                                fontSize = 12.sp,
+                                color = Color(0xFFD1FAE5)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OutlinedButton(
+                                onClick = { viewModel.pauseOrResumeTimer(active.isPaused) }
+                            ) {
+                                Text(if (active.isPaused) "Resume" else "Pause", color = Color.White)
+                            }
+                            Button(
+                                onClick = { viewModel.stopAndSaveTimer() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.Black)
+                            ) {
+                                Text("Save & Stop", fontWeight = FontWeight.Bold)
+                            }
+                            TextButton(onClick = { viewModel.discardActiveTimer() }) {
+                                Text("Discard", color = Color(0xFFF87171))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Per-Subject Timer Cards ("Head of Subjects & Timers of Each Subject")
+        if (state.subjectSummaries.isEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("No Subjects Available", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("Add your courses first so each subject gets its own dedicated timer.", fontSize = 12.sp, color = Color(0xFF9CA3AF))
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = onAddSubjectClick,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.Black)
+                        ) {
+                            Text("+ Add Subject", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        } else {
+            items(state.subjectSummaries, key = { it.subjectId }) { item ->
+                val isThisRunning = active.isRunning && active.subjectId == item.subjectId
+                val accent = parseHexColor(item.colorHex)
+                val titleText = if (item.code.isNotBlank()) "${item.code} — ${item.name}" else item.name
+                val liveSeconds = item.totalSeconds + (if (isThisRunning) active.elapsedSeconds else 0L)
+                val liveRemaining = (item.targetSeconds - liveSeconds).coerceAtLeast(0L)
+                val livePct = if (item.targetSeconds > 0L) {
+                    ((liveSeconds.toFloat() / item.targetSeconds.toFloat()) * 100f).coerceIn(0f, 100f)
+                } else 0f
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = titleText, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Studied: ${formatDurationHoursMinutes(liveSeconds)} / Target: ${formatDurationHoursMinutes(item.targetSeconds)} (${formatDurationHoursMinutes(liveRemaining)} left)",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF9CA3AF)
+                                )
+                            }
+                            Text(
+                                text = "${livePct.roundToInt()}%",
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = accent
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { (livePct / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = accent,
+                            trackColor = Color(0xFF1F2937)
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        if (isThisRunning) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Running: ${formatClockHhMmSs(active.elapsedSeconds)}",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF10B981)
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { viewModel.pauseOrResumeTimer(active.isPaused) }) {
+                                        Text(if (active.isPaused) "Resume" else "Pause", fontSize = 12.sp)
+                                    }
+                                    Button(
+                                        onClick = { viewModel.stopAndSaveTimer() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.Black)
+                                    ) {
+                                        Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    viewModel.startSubjectTimer(
+                                        summary = item,
+                                        mode = selectedMode,
+                                        countdownMinutes = countdownMins
+                                    )
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (selectedMode == TimerMode.STOPWATCH) {
+                                        "Start Stopwatch for ${item.name}"
+                                    } else {
+                                        "Start ${countdownMins}m Countdown for ${item.name}"
+                                    },
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -383,61 +731,304 @@ private fun CourseworkTab(state: StudyTrackerUiState, viewModel: StudyTrackerVie
     }
 }
 
+// =========================================================================
+// TAB 3: GENERAL SETTINGS, WIDGET CONTROLS & BACKUP/EXPORT
+// =========================================================================
 @Composable
-private fun AnalyticsTab(state: StudyTrackerUiState) {
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            Text("Recent Study Sessions", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        }
-        items(state.sessions) { s ->
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text(
-                        text = "${s.topicStudied} (${s.durationSeconds / 60} min)",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "${s.dateIso} • Mode: ${s.mode.name} • Focus: ${s.focusRating}/5",
-                        color = Color(0xFF9CA3AF),
-                        fontSize = 12.sp
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun BackupExportTab(
+private fun GeneralSettingsTab(
+    state: StudyTrackerUiState,
+    viewModel: StudyTrackerViewModel,
     onBackupJson: () -> Unit,
     onRestoreJson: () -> Unit,
     onExportCsv: () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text(
-            text = "Offline Storage Access Framework (SAF)",
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.White
-        )
-        Text(
-            text = "Zero internet permissions. Export your entire SQLite database to a local .json snapshot or export study logs as a UTF-8 .csv file ready for Microsoft Excel.",
-            color = Color(0xFF9CA3AF),
-            fontSize = 13.sp
-        )
-        Button(onClick = onBackupJson, modifier = Modifier.fillMaxWidth()) {
-            Text("Export Full Database Backup (.json)")
+    var defaultMode by remember(state.prefs.defaultMode) { mutableStateOf(state.prefs.defaultMode) }
+    var defaultMinsText by remember(state.prefs.defaultCountdownMinutes) {
+        mutableStateOf(state.prefs.defaultCountdownMinutes.toString())
+    }
+    var autoStop by remember(state.prefs.autoStopAtTarget) { mutableStateOf(state.prefs.autoStopAtTarget) }
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item {
+            Text(
+                text = "General Settings",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            Text(
+                text = "Configure default timers, home screen widgets, and offline data backups",
+                fontSize = 12.sp,
+                color = Color(0xFF9CA3AF)
+            )
         }
-        OutlinedButton(onClick = onRestoreJson, modifier = Modifier.fillMaxWidth()) {
-            Text("Restore Database from Backup (.json)")
+
+        // Home Screen Widget Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Android Home Screen Widget", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                    Text(
+                        text = "Your APK includes a native Home Screen Widget showing each course name and the exact percentage of your target study time completed. Long-press your phone's home screen -> tap Widgets -> select Study Tracker Progress.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF9CA3AF)
+                    )
+                    Button(
+                        onClick = { viewModel.refreshHomeWidgetNow() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.Black),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Sync & Refresh Home Screen Widget Now", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
-        Button(onClick = onExportCsv, modifier = Modifier.fillMaxWidth()) {
-            Text("Export Study Sessions for Excel (.csv)")
+
+        // Timer Preferences Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Default Timer Preferences", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = defaultMode == TimerMode.STOPWATCH,
+                            onClick = { defaultMode = TimerMode.STOPWATCH },
+                            label = { Text("Default: Stopwatch") }
+                        )
+                        FilterChip(
+                            selected = defaultMode == TimerMode.POMODORO,
+                            onClick = { defaultMode = TimerMode.POMODORO },
+                            label = { Text("Default: Countdown") }
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = defaultMinsText,
+                        onValueChange = { defaultMinsText = it },
+                        label = { Text("Default Countdown Duration (Minutes)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Auto-stop at 100% Subject Target", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text("Automatically finish stopwatch when a course reaches its target hours", color = Color(0xFF9CA3AF), fontSize = 11.sp)
+                        }
+                        Switch(checked = autoStop, onCheckedChange = { autoStop = it })
+                    }
+
+                    Button(
+                        onClick = {
+                            val mins = defaultMinsText.toIntOrNull() ?: 45
+                            viewModel.updateGeneralSettings(defaultMode, mins, autoStop)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Save Timer Settings", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Offline Backup & Excel CSV Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Offline Backup & Excel Export", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    Button(onClick = onExportCsv, modifier = Modifier.fillMaxWidth()) {
+                        Text("Export Subjects & Progress for Excel (.csv)")
+                    }
+                    OutlinedButton(onClick = onBackupJson, modifier = Modifier.fillMaxWidth()) {
+                        Text("Backup All Courses & Progress (.json)")
+                    }
+                    OutlinedButton(onClick = onRestoreJson, modifier = Modifier.fillMaxWidth()) {
+                        Text("Restore Backup from File (.json)")
+                    }
+                }
+            }
+        }
+
+        // Reset Controls Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F17)),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Reset & Data Controls", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF87171))
+                    OutlinedButton(
+                        onClick = { viewModel.resetAllProgressKeepSubjects() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Reset Studied Hours to 0 (Keep Subjects)", color = Color(0xFFFBBF24))
+                    }
+                    OutlinedButton(
+                        onClick = { viewModel.clearAllSubjectsAndData() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Delete All Subjects & Start Fresh", color = Color(0xFFF87171))
+                    }
+                }
+            }
         }
     }
+}
+
+// =========================================================================
+// DIALOGS: ADD / EDIT SUBJECT & TARGET HOURS, MANUAL TIME LOG
+// =========================================================================
+@Composable
+private fun AddOrEditSubjectDialog(
+    initialSummary: SubjectStudySummary?,
+    onDismiss: () -> Unit,
+    onConfirm: (code: String, name: String, targetHours: Float, colorHex: String) -> Unit
+) {
+    var name by remember { mutableStateOf(initialSummary?.name ?: "") }
+    var code by remember { mutableStateOf(initialSummary?.code ?: "") }
+    var targetHoursText by remember {
+        mutableStateOf(initialSummary?.targetHoursPerWeek?.toString() ?: "10")
+    }
+    var selectedColor by remember {
+        mutableStateOf(initialSummary?.colorHex ?: SUBJECT_COLOR_PALETTE.first())
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = if (initialSummary == null) "Add New Subject / Course" else "Edit Subject & Target Hours",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Subject / Course Name (Required)") },
+                    placeholder = { Text("e.g. Structural Analysis / Physics / Math") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it },
+                    label = { Text("Course Code (Optional)") },
+                    placeholder = { Text("e.g. CEE 4311") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = targetHoursText,
+                    onValueChange = { targetHoursText = it },
+                    label = { Text("Target Study Hours (Limit / Goal)") },
+                    placeholder = { Text("e.g. 12.5") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("Pick Subject Color", fontSize = 12.sp, color = Color(0xFF9CA3AF))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SUBJECT_COLOR_PALETTE.forEach { hex ->
+                        val c = parseHexColor(hex)
+                        val isSelected = selectedColor.equals(hex, ignoreCase = true)
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(c)
+                                .border(
+                                    width = if (isSelected) 3.dp else 0.dp,
+                                    color = if (isSelected) Color.White else Color.Transparent,
+                                    shape = CircleShape
+                                )
+                                .clickable { selectedColor = hex }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (name.isNotBlank()) {
+                        val hrs = targetHoursText.toFloatOrNull()?.coerceAtLeast(0.5f) ?: 10f
+                        onConfirm(code, name, hrs, selectedColor)
+                    }
+                }
+            ) {
+                Text("Save Subject")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ManualLogDialog(
+    summary: SubjectStudySummary,
+    onDismiss: () -> Unit,
+    onConfirm: (minutes: Int, note: String) -> Unit
+) {
+    var minutesText by remember { mutableStateOf("60") }
+    var noteText by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Log Study Time — ${summary.name}", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = minutesText,
+                    onValueChange = { minutesText = it },
+                    label = { Text("Minutes Studied (e.g. 60 = 1 hour)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = noteText,
+                    onValueChange = { noteText = it },
+                    label = { Text("Topic / Note (Optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val mins = minutesText.toIntOrNull()?.coerceAtLeast(1) ?: 30
+                    onConfirm(mins, noteText)
+                }
+            ) {
+                Text("Add to Completed Time")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }

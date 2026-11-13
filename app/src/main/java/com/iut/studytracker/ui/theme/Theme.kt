@@ -5,7 +5,6 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-// True #000000 AMOLED Dark Palette optimized for 120Hz OLED panels
 val AmoledBlack = Color(0xFF000000)
 val AmoledSurface = Color(0xFF0B0F17)
 val AmoledCard = Color(0xFF111827)

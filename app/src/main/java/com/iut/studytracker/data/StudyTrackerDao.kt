@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface StudyTrackerDao {
 
-    @Query("SELECT * FROM subjects WHERE isArchived = 0 ORDER BY code ASC")
+    @Query("SELECT * FROM subjects WHERE isArchived = 0 ORDER BY id ASC")
     fun observeActiveSubjects(): Flow<List<SubjectEntity>>
 
     @Query("SELECT * FROM subjects ORDER BY id ASC")
@@ -45,6 +45,9 @@ interface StudyTrackerDao {
     @Delete
     suspend fun deleteSession(session: StudySessionEntity)
 
+    @Query("DELETE FROM study_sessions WHERE subjectId = :subjectId")
+    suspend fun clearSessionsForSubject(subjectId: Long)
+
     @Query(
         """
         SELECT s.id AS subjectId,
@@ -58,10 +61,28 @@ interface StudyTrackerDao {
         LEFT JOIN study_sessions ss ON s.id = ss.subjectId
         WHERE s.isArchived = 0
         GROUP BY s.id
-        ORDER BY totalSeconds DESC, s.code ASC
+        ORDER BY s.id ASC
         """
     )
     fun observeSubjectSummaries(): Flow<List<SubjectStudySummary>>
+
+    @Query(
+        """
+        SELECT s.id AS subjectId,
+               s.code AS code,
+               s.name AS name,
+               s.colorHex AS colorHex,
+               s.targetHoursPerWeek AS targetHoursPerWeek,
+               COALESCE(SUM(ss.durationSeconds), 0) AS totalSeconds,
+               COUNT(ss.id) AS sessionCount
+        FROM subjects s
+        LEFT JOIN study_sessions ss ON s.id = ss.subjectId
+        WHERE s.isArchived = 0
+        GROUP BY s.id
+        ORDER BY s.id ASC
+        """
+    )
+    suspend fun getSubjectSummariesOnce(): List<SubjectStudySummary>
 
     @Query(
         """

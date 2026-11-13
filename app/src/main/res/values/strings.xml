@@ -1,3 +1,5 @@
 <resources>
-    <string name="app_name">StudyTracker</string>
+    <string name="app_name">Study Tracker</string>
+    <string name="widget_title">Study Tracker Progress</string>
+    <string name="widget_description">Displays your courses and the percentage of target study hours completed.</string>
 </resources>

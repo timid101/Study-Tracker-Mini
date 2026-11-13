@@ -2,7 +2,6 @@ package com.iut.studytracker.util
 
 import android.content.Context
 import android.net.Uri
-import com.iut.studytracker.data.DailyGoalEntity
 import com.iut.studytracker.data.ExamScheduleEntity
 import com.iut.studytracker.data.StudyNoteEntity
 import com.iut.studytracker.data.StudySessionEntity
@@ -12,7 +11,6 @@ import com.iut.studytracker.data.TaskCategory
 import com.iut.studytracker.data.TaskItemEntity
 import com.iut.studytracker.data.TaskPriority
 import com.iut.studytracker.data.TimerMode
-import com.iut.studytracker.data.TimerPresetEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -31,11 +29,9 @@ object SafBackupExportManager {
                 val tasks = dao.getAllTasksOnce()
                 val exams = dao.getAllExamsOnce()
                 val notes = dao.getAllNotesOnce()
-                val goals = dao.getAllDailyGoalsOnce()
-                val presets = dao.getAllPresetsOnce()
 
                 val root = JSONObject().apply {
-                    put("schemaVersion", 1)
+                    put("schemaVersion", 2)
                     put("exportedAtEpochMs", System.currentTimeMillis())
                     put("subjects", JSONArray().apply {
                         subjects.forEach { s ->
@@ -111,7 +107,7 @@ object SafBackupExportManager {
                         writer.write(root.toString(2))
                     }
                 } ?: error("Unable to open output stream")
-                sessions.size
+                subjects.size
             }
         }
 
@@ -133,10 +129,10 @@ object SafBackupExportManager {
                     val o = subjectsArr.getJSONObject(i)
                     SubjectEntity(
                         id = o.getLong("id"),
-                        code = o.getString("code"),
+                        code = o.optString("code", ""),
                         name = o.getString("name"),
                         colorHex = o.optString("colorHex", "#10B981"),
-                        targetHoursPerWeek = o.optDouble("targetHoursPerWeek", 6.0).toFloat(),
+                        targetHoursPerWeek = o.optDouble("targetHoursPerWeek", 10.0).toFloat(),
                         credits = o.optDouble("credits", 3.0).toFloat(),
                         isArchived = o.optBoolean("isArchived", false),
                         createdAtEpochMs = o.optLong("createdAtEpochMs", System.currentTimeMillis())
@@ -151,7 +147,7 @@ object SafBackupExportManager {
                         startTimeEpochMs = o.getLong("startTimeEpochMs"),
                         endTimeEpochMs = o.getLong("endTimeEpochMs"),
                         durationSeconds = o.getLong("durationSeconds"),
-                        mode = runCatching { TimerMode.valueOf(o.optString("mode", "POMODORO")) }.getOrDefault(TimerMode.POMODORO),
+                        mode = runCatching { TimerMode.valueOf(o.optString("mode", "STOPWATCH")) }.getOrDefault(TimerMode.STOPWATCH),
                         topicStudied = o.optString("topicStudied", ""),
                         focusRating = o.optInt("focusRating", 5),
                         notes = o.optString("notes", ""),
@@ -199,34 +195,45 @@ object SafBackupExportManager {
                 val presets = dao.getAllPresetsOnce()
                 val goals = dao.getAllDailyGoalsOnce()
                 dao.restoreFullSnapshot(subjects, sessions, tasks, exams, notes, goals, presets)
-                sessions.size
+                subjects.size
             }
         }
 
     suspend fun exportSessionsToExcelCsv(context: Context, dao: StudyTrackerDao, uri: Uri): Result<Int> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val subjectsById = dao.getAllSubjectsOnce().associateBy { it.id }
+                val summaries = dao.getSubjectSummariesOnce()
+                val subjectsById = summaries.associateBy { it.subjectId }
                 val sessions = dao.getAllSessionsOnce()
 
                 context.contentResolver.openOutputStream(uri)?.use { out ->
                     OutputStreamWriter(out, Charsets.UTF_8).use { writer ->
-                        // Write UTF-8 BOM for Microsoft Excel compatibility
                         writer.write("\uFEFF")
-                        writer.write("Session ID,Date,Course Code,Course Name,Timer Mode,Duration (Minutes),Duration (Hours),Topic Studied,Focus Rating (1-5),Notes\n")
+                        writer.write("SUBJECT TARGET PROGRESS SUMMARY\n")
+                        writer.write("Course Code,Subject Name,Target Hours,Completed Hours,Remaining Hours,Completion %\n")
+                        for (sum in summaries) {
+                            val safeCode = sum.code.replace("\"", "\"\"")
+                            val safeName = sum.name.replace("\"", "\"\"")
+                            val targetH = String.format("%.2f", sum.targetHoursPerWeek)
+                            val studiedH = String.format("%.2f", sum.totalSeconds / 3600.0)
+                            val remH = String.format("%.2f", sum.remainingSeconds / 3600.0)
+                            val pct = String.format("%.1f%%", sum.completionPercent)
+                            writer.write("\"$safeCode\",\"$safeName\",$targetH,$studiedH,$remH,$pct\n")
+                        }
+                        writer.write("\nSTUDY SESSION LOGS\n")
+                        writer.write("Session ID,Date,Course Code,Subject Name,Timer Mode,Duration (Minutes),Duration (Hours),Notes\n")
                         for (s in sessions) {
                             val sub = subjectsById[s.subjectId]
                             val mins = String.format("%.1f", s.durationSeconds / 60.0)
                             val hrs = String.format("%.2f", s.durationSeconds / 3600.0)
                             val safeTopic = s.topicStudied.replace("\"", "\"\"")
-                            val safeNotes = s.notes.replace("\"", "\"\"")
                             val safeName = (sub?.name ?: "Unknown").replace("\"", "\"\"")
-                            val safeCode = (sub?.code ?: "N/A").replace("\"", "\"\"")
-                            writer.write("${s.id},${s.dateIso},\"$safeCode\",\"$safeName\",${s.mode.name},$mins,$hrs,\"$safeTopic\",${s.focusRating},\"$safeNotes\"\n")
+                            val safeCode = (sub?.code ?: "").replace("\"", "\"\"")
+                            writer.write("${s.id},${s.dateIso},\"$safeCode\",\"$safeName\",${s.mode.name},$mins,$hrs,\"$safeTopic\"\n")
                         }
                     }
                 } ?: error("Unable to open CSV output stream")
-                sessions.size
+                summaries.size
             }
         }
 }

@@ -8,7 +8,7 @@ class Converters {
 
     @TypeConverter
     fun toTimerMode(value: String): TimerMode =
-        runCatching { TimerMode.valueOf(value) }.getOrDefault(TimerMode.POMODORO)
+        runCatching { TimerMode.valueOf(value) }.getOrDefault(TimerMode.STOPWATCH)
 
     @TypeConverter
     fun fromTaskPriority(value: TaskPriority): String = value.name
