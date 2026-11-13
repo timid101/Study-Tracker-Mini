@@ -5,9 +5,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -33,6 +36,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -108,6 +112,17 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            if (selectedTab == 0 || selectedTab == 1) {
+                ExtendedFloatingActionButton(
+                    onClick = { showAddSubjectDialog = true },
+                    containerColor = Color(0xFF10B981),
+                    contentColor = Color.Black,
+                    icon = { Icon(Icons.Default.Add, contentDescription = "Add Subject") },
+                    text = { Text("Add Subject", fontWeight = FontWeight.Bold) }
+                )
+            }
+        },
         bottomBar = {
             NavigationBar(containerColor = Color(0xFF070A10)) {
                 NavigationBarItem(
@@ -174,9 +189,12 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
         AddOrEditSubjectDialog(
             initialSummary = null,
             onDismiss = { showAddSubjectDialog = false },
-            onConfirm = { code, name, targetHrs, colorHex ->
+            onConfirmAndClose = { code, name, targetHrs, colorHex ->
                 viewModel.addSubject(code, name, targetHrs, colorHex)
                 showAddSubjectDialog = false
+            },
+            onConfirmAndAddAnother = { code, name, targetHrs, colorHex ->
+                viewModel.addSubject(code, name, targetHrs, colorHex)
             }
         )
     }
@@ -185,10 +203,11 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
         AddOrEditSubjectDialog(
             initialSummary = item,
             onDismiss = { editingSummary = null },
-            onConfirm = { code, name, targetHrs, colorHex ->
+            onConfirmAndClose = { code, name, targetHrs, colorHex ->
                 viewModel.updateSubjectTargetAndName(item.subjectId, code, name, targetHrs, colorHex)
                 editingSummary = null
-            }
+            },
+            onConfirmAndAddAnother = null
         )
     }
 
@@ -223,34 +242,46 @@ private fun SubjectsFirstInterfaceTab(
         ((totalStudiedSec.toDouble() / totalTargetSec.toDouble()) * 100.0).roundToInt().coerceIn(0, 100)
     } else 0
 
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 88.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                // Modifier.weight(1f) prevents long subtitle text from pushing the Add button off-screen!
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 10.dp)
+                ) {
                     Text(
-                        text = "My Subjects & Targets",
-                        fontSize = 22.sp,
+                        text = "My Subjects (${state.subjectSummaries.size})",
+                        fontSize = 21.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
                     Text(
-                        text = "Track target hours, completed study, and remaining time",
+                        text = "Target hours, completed & remaining time",
                         fontSize = 12.sp,
                         color = Color(0xFF9CA3AF)
                     )
                 }
                 Button(
                     onClick = onAddSubjectClick,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.Black),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF10B981),
+                        contentColor = Color.Black
+                    ),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Add Course", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("Add", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
             }
         }
@@ -315,7 +346,7 @@ private fun SubjectsFirstInterfaceTab(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Add your own subjects and set how many hours you want to study each subject.",
+                            text = "Add as many subjects as you want and set a target study hour limit for each one.",
                             fontSize = 13.sp,
                             color = Color(0xFF9CA3AF)
                         )
@@ -350,7 +381,9 @@ private fun SubjectsFirstInterfaceTab(
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
@@ -387,7 +420,6 @@ private fun SubjectsFirstInterfaceTab(
 
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        // Completed vs Target vs Remaining Row
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
@@ -411,7 +443,6 @@ private fun SubjectsFirstInterfaceTab(
 
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        // Action Buttons Row
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -447,6 +478,23 @@ private fun SubjectsFirstInterfaceTab(
                     }
                 }
             }
+
+            // Full-width button right below the list so adding more subjects is always obvious
+            item {
+                OutlinedButton(
+                    onClick = onAddSubjectClick,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, tint = Color(0xFF10B981))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Add Another Subject / Course",
+                        color = Color(0xFF10B981),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
         }
     }
 }
@@ -473,19 +521,47 @@ private fun SubjectTimersTab(
     var selectedMode by remember { mutableStateOf(state.prefs.defaultMode) }
     var countdownMins by remember { mutableIntStateOf(state.prefs.defaultCountdownMinutes) }
 
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 88.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         item {
-            Text(
-                text = "Subject Timers",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
-            Text(
-                text = "Select any subject below to run its timer and track remaining target hours",
-                fontSize = 12.sp,
-                color = Color(0xFF9CA3AF)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 10.dp)
+                ) {
+                    Text(
+                        text = "Subject Timers (${state.subjectSummaries.size})",
+                        fontSize = 21.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Run a dedicated timer for any subject below",
+                        fontSize = 12.sp,
+                        color = Color(0xFF9CA3AF)
+                    )
+                }
+                Button(
+                    onClick = onAddSubjectClick,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF10B981),
+                        contentColor = Color.Black
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
         }
 
         // Mode & Countdown Duration Selector Bar
@@ -498,7 +574,10 @@ private fun SubjectTimersTab(
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text("Timer Mode for Starting a Subject", fontSize = 12.sp, color = Color(0xFF9CA3AF))
                     Spacer(modifier = Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         FilterChip(
                             selected = selectedMode == TimerMode.STOPWATCH,
                             onClick = { selectedMode = TimerMode.STOPWATCH },
@@ -512,7 +591,10 @@ private fun SubjectTimersTab(
                     }
                     if (selectedMode == TimerMode.POMODORO) {
                         Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             listOf(25, 45, 60, 90, 120).forEach { mins ->
                                 FilterChip(
                                     selected = countdownMins == mins,
@@ -526,7 +608,7 @@ private fun SubjectTimersTab(
             }
         }
 
-        // Active Running Timer Card (if any subject timer is running)
+        // Active Running Timer Card
         if (active.isRunning) {
             item {
                 val activeSummary = state.subjectSummaries.find { it.subjectId == active.subjectId }
@@ -595,7 +677,6 @@ private fun SubjectTimersTab(
             }
         }
 
-        // Per-Subject Timer Cards ("Head of Subjects & Timers of Each Subject")
         if (state.subjectSummaries.isEmpty()) {
             item {
                 Card(
@@ -644,7 +725,11 @@ private fun SubjectTimersTab(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp)
+                            ) {
                                 Text(text = titleText, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
@@ -748,7 +833,11 @@ private fun GeneralSettingsTab(
     }
     var autoStop by remember(state.prefs.autoStopAtTarget) { mutableStateOf(state.prefs.autoStopAtTarget) }
 
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
         item {
             Text(
                 text = "General Settings",
@@ -823,7 +912,11 @@ private fun GeneralSettingsTab(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                        ) {
                             Text("Auto-stop at 100% Subject Target", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                             Text("Automatically finish stopwatch when a course reaches its target hours", color = Color(0xFF9CA3AF), fontSize = 11.sp)
                         }
@@ -899,22 +992,26 @@ private fun GeneralSettingsTab(
 private fun AddOrEditSubjectDialog(
     initialSummary: SubjectStudySummary?,
     onDismiss: () -> Unit,
-    onConfirm: (code: String, name: String, targetHours: Float, colorHex: String) -> Unit
+    onConfirmAndClose: (code: String, name: String, targetHours: Float, colorHex: String) -> Unit,
+    onConfirmAndAddAnother: ((code: String, name: String, targetHours: Float, colorHex: String) -> Unit)? = null
 ) {
     var name by remember { mutableStateOf(initialSummary?.name ?: "") }
     var code by remember { mutableStateOf(initialSummary?.code ?: "") }
     var targetHoursText by remember {
         mutableStateOf(initialSummary?.targetHoursPerWeek?.toString() ?: "10")
     }
-    var selectedColor by remember {
-        mutableStateOf(initialSummary?.colorHex ?: SUBJECT_COLOR_PALETTE.first())
+    var selectedColorIndex by remember {
+        val idx = SUBJECT_COLOR_PALETTE.indexOfFirst {
+            it.equals(initialSummary?.colorHex ?: "", ignoreCase = true)
+        }
+        mutableIntStateOf(if (idx >= 0) idx else 0)
     }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = if (initialSummary == null) "Add New Subject / Course" else "Edit Subject & Target Hours",
+                text = if (initialSummary == null) "Add Subject / Course" else "Edit Subject & Target",
                 fontWeight = FontWeight.Bold
             )
         },
@@ -923,8 +1020,8 @@ private fun AddOrEditSubjectDialog(
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Subject / Course Name (Required)") },
-                    placeholder = { Text("e.g. Structural Analysis / Physics / Math") },
+                    label = { Text("Subject / Course Name *") },
+                    placeholder = { Text("e.g. Structural Analysis / Physics") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -939,16 +1036,19 @@ private fun AddOrEditSubjectDialog(
                 OutlinedTextField(
                     value = targetHoursText,
                     onValueChange = { targetHoursText = it },
-                    label = { Text("Target Study Hours (Limit / Goal)") },
+                    label = { Text("Target Study Hours (Limit / Goal) *") },
                     placeholder = { Text("e.g. 12.5") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text("Pick Subject Color", fontSize = 12.sp, color = Color(0xFF9CA3AF))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SUBJECT_COLOR_PALETTE.forEach { hex ->
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SUBJECT_COLOR_PALETTE.forEachIndexed { index, hex ->
                         val c = parseHexColor(hex)
-                        val isSelected = selectedColor.equals(hex, ignoreCase = true)
+                        val isSelected = selectedColorIndex == index
                         Box(
                             modifier = Modifier
                                 .size(28.dp)
@@ -959,22 +1059,41 @@ private fun AddOrEditSubjectDialog(
                                     color = if (isSelected) Color.White else Color.Transparent,
                                     shape = CircleShape
                                 )
-                                .clickable { selectedColor = hex }
+                                .clickable { selectedColorIndex = index }
                         )
                     }
                 }
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (name.isNotBlank()) {
-                        val hrs = targetHoursText.toFloatOrNull()?.coerceAtLeast(0.5f) ?: 10f
-                        onConfirm(code, name, hrs, selectedColor)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (onConfirmAndAddAnother != null) {
+                    OutlinedButton(
+                        onClick = {
+                            if (name.isNotBlank()) {
+                                val hrs = targetHoursText.toFloatOrNull()?.coerceAtLeast(0.5f) ?: 10f
+                                val color = SUBJECT_COLOR_PALETTE[selectedColorIndex]
+                                onConfirmAndAddAnother(code, name, hrs, color)
+                                name = ""
+                                code = ""
+                                selectedColorIndex = (selectedColorIndex + 1) % SUBJECT_COLOR_PALETTE.size
+                            }
+                        }
+                    ) {
+                        Text("+ Save & Add Next", fontSize = 12.sp)
                     }
                 }
-            ) {
-                Text("Save Subject")
+                Button(
+                    onClick = {
+                        if (name.isNotBlank()) {
+                            val hrs = targetHoursText.toFloatOrNull()?.coerceAtLeast(0.5f) ?: 10f
+                            val color = SUBJECT_COLOR_PALETTE[selectedColorIndex]
+                            onConfirmAndClose(code, name, hrs, color)
+                        }
+                    }
+                ) {
+                    Text("Save")
+                }
             }
         },
         dismissButton = {
