@@ -74,6 +74,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,6 +95,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.iut.studytracker.data.StudySessionEntity
+import com.iut.studytracker.data.StudyTrackerDatabase
+import com.iut.studytracker.data.SubjectEntity
 import com.iut.studytracker.data.SubjectStudySummary
 import com.iut.studytracker.data.TimerMode
 import com.iut.studytracker.ui.components.formatClockHhMmSs
@@ -101,7 +105,10 @@ import com.iut.studytracker.ui.components.formatDurationHoursMinutes
 import com.iut.studytracker.ui.components.parseHexColor
 import com.iut.studytracker.viewmodel.StudyTrackerUiState
 import com.iut.studytracker.viewmodel.StudyTrackerViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
@@ -162,6 +169,8 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
     val rawState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
+    val dao = remember { StudyTrackerDatabase.getInstance(context).dao() }
     val uiPrefs = remember {
         context.getSharedPreferences("study_tracker_ui_extra_prefs", Context.MODE_PRIVATE)
     }
@@ -169,7 +178,7 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Extra UI & Focus Preferences (Theme, Siren Sound Type, Custom Audio URI, 15s Strict Focus Auto-Stop)
+    // Extra UI & Focus Preferences
     var isDarkTheme by remember { mutableStateOf(uiPrefs.getBoolean("is_dark_theme", true)) }
     var selectedSirenType by remember {
         val saved = uiPrefs.getString("siren_sound_type", SirenSoundOption.EMERGENCY_SIREN.id)
@@ -239,6 +248,42 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
         }
     }
 
+    // Helper to edit or reset study time for ANY specific date (Date -> Subject -> Edit/Reset)
+    val setExactSubjectMinutesOnDate: (Long, String, Int) -> Unit = { subjectId, dateStr, newMinutes ->
+        coroutineScope.launch {
+            withContext(Dispatchers.IO) {
+                val existingOnDate = rawState.sessions.filter {
+                    it.subjectId == subjectId && it.dateIso == dateStr
+                }
+                existingOnDate.forEach { sess ->
+                    dao.deleteSession(sess)
+                }
+                if (newMinutes > 0) {
+                    val sec = newMinutes * 60L
+                    val now = System.currentTimeMillis()
+                    dao.insertSession(
+                        StudySessionEntity(
+                            subjectId = subjectId,
+                            startTimeEpochMs = now - sec * 1000L,
+                            endTimeEpochMs = now,
+                            durationSeconds = sec,
+                            mode = TimerMode.STOPWATCH,
+                            topicStudied = "Edited via Settings ($dateStr)",
+                            focusRating = 5,
+                            notes = "Adjusted in Settings",
+                            dateIso = dateStr
+                        )
+                    )
+                }
+            }
+            viewModel.refreshHomeWidgetNow()
+            snackbarHostState.showSnackbar(
+                if (newMinutes > 0) "Updated study time on $dateStr to ${newMinutes}m."
+                else "Reset study time on $dateStr to 0m."
+            )
+        }
+    }
+
     // Track whether the app is currently visible in the foreground for the 15-Second Strict Focus Auto-Stop
     var isAppInForeground by remember { mutableStateOf(true) }
     DisposableEffect(lifecycleOwner) {
@@ -279,7 +324,6 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
                         break
                     }
                 } else {
-                    // Screen is locked/off — user is studying with phone locked, so reset counter
                     secondsOutsideWithScreenOn = 0
                 }
             }
@@ -387,7 +431,6 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
                             delay(650L)
                         }
                         SirenSoundOption.SYSTEM_ALARM, SirenSoundOption.CUSTOM_MUSIC -> {
-                            // Ringtone is playing; if ringtone failed to play, fallback to emergency tone
                             if (activeRingtone == null || activeRingtone?.isPlaying == false) {
                                 runCatching {
                                     toneGen?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 450)
@@ -416,9 +459,9 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
     // Dialog states
     var showAddSubjectDialog by remember { mutableStateOf(false) }
     var editingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
-    var loggingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
     var deletingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
     var confirmResetMode by remember { mutableStateOf<String?>(null) }
+    var showDateSubjectEditWizard by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.statusBanner) {
         state.statusBanner?.let {
@@ -439,7 +482,6 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
         ActivityResultContracts.CreateDocument("text/csv")
     ) { uri -> uri?.let { viewModel.exportCsvForExcel(it) } }
 
-    // Custom Music / Audio Picker Launcher for Alarm Sound
     val pickAudioLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -466,7 +508,8 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            if (selectedTab == 0 || selectedTab == 1) {
+            // Only show the single bottom-right "+ Add Subject" button on the Subjects tab
+            if (selectedTab == 0) {
                 ExtendedFloatingActionButton(
                     onClick = { showAddSubjectDialog = true },
                     containerColor = Color(0xFF10B981),
@@ -575,19 +618,7 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
                     state = state,
                     onAddSubjectClick = { showAddSubjectDialog = true },
                     onEditSubjectClick = { editingSummary = it },
-                    onLogManualClick = { loggingSummary = it },
-                    onDeleteSubjectClick = { deletingSummary = it },
-                    onJumpToTimerClick = { summary ->
-                        if (state.activeTimer.isRunning && state.activeTimer.subjectId != summary.subjectId) {
-                            saveAndStopCurrentTimer("Saved before switching subject")
-                        }
-                        viewModel.startSubjectTimer(
-                            summary = summary,
-                            mode = state.prefs.defaultMode,
-                            countdownMinutes = state.prefs.defaultCountdownMinutes
-                        )
-                        selectedTab = 1
-                    }
+                    onDeleteSubjectClick = { deletingSummary = it }
                 )
                 1 -> SubjectTimersTab(
                     theme = theme,
@@ -634,6 +665,9 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
                         sirenSubjectTitle = "Alarm Sound Preview"
                         isSirenRinging = true
                     },
+                    onOpenDateSubjectEditWizard = {
+                        showDateSubjectEditWizard = true
+                    },
                     onBackupJson = { createJsonLauncher.launch("study_tracker_backup_${LocalDate.now()}.json") },
                     onRestoreJson = { openJsonLauncher.launch(arrayOf("application/json", "*/*")) },
                     onExportCsv = { createCsvLauncher.launch("study_progress_${LocalDate.now()}.csv") },
@@ -670,26 +704,16 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
         )
     }
 
-    loggingSummary?.let { item ->
-        ManualLogDialog(
-            summary = item,
-            onDismiss = { loggingSummary = null },
-            onAddMinutes = { mins, note ->
-                viewModel.logManualSession(item.subjectId, mins, note)
-                loggingSummary = null
-            },
-            onSubtractMinutes = { mins ->
-                val currentMins = (item.totalSeconds / 60L).toInt()
-                val newTotalMins = (currentMins - mins).coerceAtLeast(0)
-                viewModel.resetSubjectProgress(item.subjectId)
-                if (newTotalMins > 0) {
-                    viewModel.logManualSession(item.subjectId, newTotalMins, "Adjusted study time (-${mins}m)")
-                }
-                loggingSummary = null
-            },
-            onResetSubjectZero = {
-                viewModel.resetSubjectProgress(item.subjectId)
-                loggingSummary = null
+    // 3-Step Date -> Subject -> Edit/Reset Study Time Wizard Dialog
+    if (showDateSubjectEditWizard) {
+        DateSubjectEditResetDialog(
+            theme = theme,
+            subjects = rawState.subjects,
+            sessions = rawState.sessions,
+            onDismiss = { showDateSubjectEditWizard = false },
+            onApplyMinutesForDateAndSubject = { subjectId, dateIsoStr, newMinutes ->
+                setExactSubjectMinutesOnDate(subjectId, dateIsoStr, newMinutes)
+                showDateSubjectEditWizard = false
             }
         )
     }
@@ -761,7 +785,8 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
 }
 
 // =========================================================================
-// TAB 1: FIRST INTERFACE — TODAY'S SUBJECTS, TARGETS, COMPLETED & REMAINING
+// TAB 1: FIRST INTERFACE — CLEAN SUBJECTS LIST & COMPLETION PERCENTAGE ONLY
+// (No top Add button, no timer buttons on cards — timers live in Tab 2!)
 // =========================================================================
 @Composable
 private fun SubjectsFirstInterfaceTab(
@@ -770,9 +795,7 @@ private fun SubjectsFirstInterfaceTab(
     state: StudyTrackerUiState,
     onAddSubjectClick: () -> Unit,
     onEditSubjectClick: (SubjectStudySummary) -> Unit,
-    onLogManualClick: (SubjectStudySummary) -> Unit,
-    onDeleteSubjectClick: (SubjectStudySummary) -> Unit,
-    onJumpToTimerClick: (SubjectStudySummary) -> Unit
+    onDeleteSubjectClick: (SubjectStudySummary) -> Unit
 ) {
     val active = state.activeTimer
     val totalStudiedSec = state.subjectSummaries.sumOf {
@@ -787,44 +810,23 @@ private fun SubjectsFirstInterfaceTab(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 88.dp),
+        contentPadding = PaddingValues(bottom = 100.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Clean full-width header (Top "+ Add" button removed!)
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 10.dp)
-                ) {
-                    Text(
-                        text = "Today's Study ($todayIso)",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = theme.textPrimary
-                    )
-                    Text(
-                        text = "Starts at 0% each new day • History & graphs in Calendar",
-                        fontSize = 11.sp,
-                        color = theme.textMuted
-                    )
-                }
-                Button(
-                    onClick = onAddSubjectClick,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF10B981),
-                        contentColor = Color.Black
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Add", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                }
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Today's Study ($todayIso)",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = theme.textPrimary
+                )
+                Text(
+                    text = "Starts at 0% each new day • History & graphs in Calendar",
+                    fontSize = 12.sp,
+                    color = theme.textMuted
+                )
             }
         }
 
@@ -888,19 +890,11 @@ private fun SubjectsFirstInterfaceTab(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Add your subjects and set a daily study hour target for each one.",
+                            text = "Tap the '+ Add Subject' button below to add your courses and daily study hour targets.",
                             fontSize = 13.sp,
-                            color = theme.textMuted
+                            color = theme.textMuted,
+                            textAlign = TextAlign.Center
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(
-                            onClick = onAddSubjectClick,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.Black)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Add Your First Subject", fontWeight = FontWeight.Bold)
-                        }
                     }
                 }
             }
@@ -946,12 +940,38 @@ private fun SubjectsFirstInterfaceTab(
                                     color = theme.textPrimary
                                 )
                             }
-                            Text(
-                                text = "$pctInt%",
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = accent
-                            )
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "$pctInt%",
+                                    fontSize = 19.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = accent
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                IconButton(
+                                    onClick = { onEditSubjectClick(item) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Edit,
+                                        contentDescription = "Edit Subject",
+                                        tint = theme.textMuted,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { onDeleteSubjectClick(item) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Delete Subject",
+                                        tint = Color(0xFFEF4444),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(10.dp))
@@ -991,58 +1011,7 @@ private fun SubjectsFirstInterfaceTab(
                                 labelColor = theme.textMuted
                             )
                         }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { onJumpToTimerClick(item) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(if (isRunningThis) "View Timer" else "Start Timer", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                                OutlinedButton(
-                                    onClick = { onLogManualClick(item) },
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Text("+/- Time", fontSize = 12.sp, color = theme.textPrimary)
-                                }
-                            }
-
-                            Row {
-                                IconButton(onClick = { onEditSubjectClick(item) }) {
-                                    Icon(Icons.Default.Edit, contentDescription = "Edit Target", tint = theme.textMuted)
-                                }
-                                IconButton(onClick = { onDeleteSubjectClick(item) }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete Subject", tint = Color(0xFFEF4444))
-                                }
-                            }
-                        }
                     }
-                }
-            }
-
-            item {
-                OutlinedButton(
-                    onClick = onAddSubjectClick,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, tint = Color(0xFF10B981))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Add Another Subject / Course",
-                        color = Color(0xFF10B981),
-                        fontWeight = FontWeight.Bold
-                    )
                 }
             }
         }
@@ -1077,48 +1046,26 @@ private fun SubjectTimersTab(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 88.dp),
+        contentPadding = PaddingValues(bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 10.dp)
-                ) {
-                    Text(
-                        text = "Subject Timers (${state.subjectSummaries.size})",
-                        fontSize = 21.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = theme.textPrimary
-                    )
-                    Text(
-                        text = if (strictFocus15sEnabled) {
-                            "Siren at target • Auto-stops if you leave app for >15s"
-                        } else {
-                            "Siren rings automatically when your subject target is reached"
-                        },
-                        fontSize = 11.sp,
-                        color = theme.textMuted
-                    )
-                }
-                Button(
-                    onClick = onAddSubjectClick,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF10B981),
-                        contentColor = Color.Black
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Add", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                }
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Subject Timers (${state.subjectSummaries.size})",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = theme.textPrimary
+                )
+                Text(
+                    text = if (strictFocus15sEnabled) {
+                        "Alarm at target • Auto-stops if you leave app for >15s"
+                    } else {
+                        "Alarm rings automatically when your subject target is reached"
+                    },
+                    fontSize = 12.sp,
+                    color = theme.textMuted
+                )
             }
         }
 
@@ -1130,7 +1077,7 @@ private fun SubjectTimersTab(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("Timer Mode (Alarm rings when limit or daily target is reached)", fontSize = 12.sp, color = theme.textMuted)
+                    Text("Timer Mode", fontSize = 12.sp, color = theme.textMuted)
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -1250,7 +1197,7 @@ private fun SubjectTimersTab(
                     ) {
                         Text("No Subjects Available", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = theme.textPrimary)
                         Spacer(modifier = Modifier.height(6.dp))
-                        Text("Add your courses first so each subject gets its own dedicated timer.", fontSize = 12.sp, color = theme.textMuted)
+                        Text("Add your courses on the Subjects tab first so each subject gets its own timer.", fontSize = 12.sp, color = theme.textMuted)
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
                             onClick = onAddSubjectClick,
@@ -1387,15 +1334,10 @@ private fun StudyCalendarWithGraphsTab(
             .mapValues { (_, list) -> list.sumOf { it.durationSeconds }.coerceAtLeast(0L) }
     }
 
-    val subjectsById = remember(state.subjects) {
-        state.subjects.associateBy { it.id }
-    }
-
     val selectedDaySessions = remember(state.sessions, selectedDateIso) {
         state.sessions.filter { it.dateIso == selectedDateIso }
     }
 
-    // For Graph 1 ("Time by Subject" on Selected Date): show every active subject on X-axis and its hours studied on selectedDateIso!
     val subjectHoursForSelectedDate = remember(state.subjects, selectedDaySessions) {
         val secBySub = selectedDaySessions
             .groupBy { it.subjectId }
@@ -1408,10 +1350,8 @@ private fun StudyCalendarWithGraphsTab(
         }
     }
 
-    val monthPrefix = displayedMonth.toString() // YYYY-MM
     val daysInMonth = displayedMonth.lengthOfMonth()
 
-    // For Graph 2 ("Time vs Day" across the whole displayed month): days 1..daysInMonth
     val dailySecondsForMonth = remember(totalsByDate, displayedMonth, daysInMonth) {
         (1..daysInMonth).map { dayNum ->
             val dateStr = displayedMonth.atDay(dayNum).toString()
@@ -1436,7 +1376,7 @@ private fun StudyCalendarWithGraphsTab(
                 color = theme.textPrimary
             )
             Text(
-                text = "Tap any date to inspect daily study hours, subject graph, and monthly trend",
+                text = "Tap any date to inspect daily study hours and monthly graphs",
                 fontSize = 12.sp,
                 color = theme.textMuted
             )
@@ -1578,7 +1518,7 @@ private fun StudyCalendarWithGraphsTab(
             }
         }
 
-        // 2. GRAPH 1: TIME BY SUBJECT (X-Axis = Subjects, Y-Axis = Hours Studied on Selected Date)
+        // 2. GRAPH 1: TIME BY SUBJECT (Clean label, no "X-axis = Subject" text!)
         item {
             val selectedDayTotalSec = totalsByDate[selectedDateIso] ?: 0L
             Card(
@@ -1594,13 +1534,13 @@ private fun StudyCalendarWithGraphsTab(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Graph 1: Time by Subject ($selectedDateIso)",
+                                text = "Time by Subject ($selectedDateIso)",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = theme.textPrimary
                             )
                             Text(
-                                text = "Hours studied per subject on the selected day (X-axis = Subject)",
+                                text = "Hours studied per subject on $selectedDateIso",
                                 fontSize = 11.sp,
                                 color = theme.textMuted
                             )
@@ -1617,7 +1557,7 @@ private fun StudyCalendarWithGraphsTab(
 
                     if (subjectHoursForSelectedDate.isEmpty()) {
                         Text(
-                            text = "Add subjects on the Subjects tab to view the Time by Subject graph.",
+                            text = "Add subjects on the Subjects tab to view this graph.",
                             fontSize = 12.sp,
                             color = theme.textMuted,
                             modifier = Modifier.padding(vertical = 12.dp)
@@ -1703,13 +1643,13 @@ private fun StudyCalendarWithGraphsTab(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Graph 2: Time vs. Day ($monthName)",
+                                text = "Time vs. Day ($monthName)",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = theme.textPrimary
                             )
                             Text(
-                                text = "Daily study hours across the whole month ($activeDaysCount active days)",
+                                text = "Daily study hours across the month ($activeDaysCount active days)",
                                 fontSize = 11.sp,
                                 color = theme.textMuted
                             )
@@ -1730,7 +1670,6 @@ private fun StudyCalendarWithGraphsTab(
                             .height(155.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Y-Axis Labels
                         Column(
                             modifier = Modifier
                                 .fillMaxHeight()
@@ -1743,7 +1682,6 @@ private fun StudyCalendarWithGraphsTab(
                             Text("0h", fontSize = 9.sp, color = theme.textMuted)
                         }
 
-                        // Monthly Bar + Trend Line Canvas
                         Column(modifier = Modifier.weight(1f)) {
                             Canvas(
                                 modifier = Modifier
@@ -1756,7 +1694,6 @@ private fun StudyCalendarWithGraphsTab(
                                 val slotW = w / n.toFloat()
                                 val barW = (slotW * 0.62f).coerceAtLeast(3f)
 
-                                // Horizontal reference lines
                                 listOf(0f, 0.5f, 1f).forEach { frac ->
                                     val y = h * frac
                                     drawLine(
@@ -1802,7 +1739,6 @@ private fun StudyCalendarWithGraphsTab(
 
                             Spacer(modifier = Modifier.height(4.dp))
 
-                            // X-Axis Day Markers
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
@@ -1820,7 +1756,7 @@ private fun StudyCalendarWithGraphsTab(
 }
 
 // =========================================================================
-// TAB 4: GENERAL SETTINGS — THEME, ALARM SOUND, 15s STRICT FOCUS & BACKUP
+// TAB 4: GENERAL SETTINGS — EDIT/RESET BY DATE & SUBJECT, THEME, ALARM, FOCUS
 // =========================================================================
 @Composable
 private fun GeneralSettingsTab(
@@ -1836,6 +1772,7 @@ private fun GeneralSettingsTab(
     strictFocus15sEnabled: Boolean,
     onToggleStrictFocus15s: (Boolean) -> Unit,
     onTestSirenClick: () -> Unit,
+    onOpenDateSubjectEditWizard: () -> Unit,
     onBackupJson: () -> Unit,
     onRestoreJson: () -> Unit,
     onExportCsv: () -> Unit,
@@ -1861,13 +1798,48 @@ private fun GeneralSettingsTab(
                 color = theme.textPrimary
             )
             Text(
-                text = "Theme mode, custom alarm sound, 15s focus guard, and backups",
+                text = "Edit past/today study time, change theme, pick alarm sound, and manage backups",
                 fontSize = 12.sp,
                 color = theme.textMuted
             )
         }
 
-        // 1. Theme Mode Card (Dark vs. Light)
+        // 1. NEW: Edit or Reset Study Time for Any Calendar Date & Subject
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = theme.card),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Edit or Reset Study Time by Date",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF10B981)
+                    )
+                    Text(
+                        text = "Select any date from the calendar, choose a subject, and edit or reset the study hours recorded on that day.",
+                        fontSize = 12.sp,
+                        color = theme.textMuted
+                    )
+                    Button(
+                        onClick = onOpenDateSubjectEditWizard,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF10B981),
+                            contentColor = Color.Black
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.DateRange, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Edit or Reset Study Time (Pick Date & Subject)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+
+        // 2. Theme Mode Card (Dark vs. Light)
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = theme.card),
@@ -1897,7 +1869,7 @@ private fun GeneralSettingsTab(
             }
         }
 
-        // 2. Alarm & Siren Sound Selector Card
+        // 3. Alarm & Siren Sound Selector Card
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = theme.card),
@@ -1969,7 +1941,7 @@ private fun GeneralSettingsTab(
             }
         }
 
-        // 3. Strict Focus (15-Second Leave App Auto-Stop) & Timer Defaults Card
+        // 4. Strict Focus (15-Second Leave App Auto-Stop) & Timer Defaults Card
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = theme.card),
@@ -1990,7 +1962,7 @@ private fun GeneralSettingsTab(
                                 .padding(end = 8.dp)
                         ) {
                             Text("Auto-Stop If You Leave App (>15 Seconds)", color = theme.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                            Text("Automatically saves and stops the timer if you switch to another app with the screen unlocked for more than 15 seconds (locking your screen keeps the timer running)", color = theme.textMuted, fontSize = 11.sp)
+                            Text("Automatically saves and stops the timer if you switch to another app with the screen unlocked for more than 15 seconds", color = theme.textMuted, fontSize = 11.sp)
                         }
                         Switch(checked = strictFocus15sEnabled, onCheckedChange = onToggleStrictFocus15s)
                     }
@@ -2044,7 +2016,7 @@ private fun GeneralSettingsTab(
             }
         }
 
-        // 4. Home Screen Widget Sync Card
+        // 5. Home Screen Widget Sync Card
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = theme.card),
@@ -2069,7 +2041,7 @@ private fun GeneralSettingsTab(
             }
         }
 
-        // 5. Offline Backup & Excel CSV Card
+        // 6. Offline Backup & Excel CSV Card
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = theme.card),
@@ -2091,7 +2063,7 @@ private fun GeneralSettingsTab(
             }
         }
 
-        // 6. Reset Controls Card
+        // 7. Reset All Controls Card
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = theme.card),
@@ -2099,7 +2071,7 @@ private fun GeneralSettingsTab(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Reset & Data Controls", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEF4444))
+                    Text("Full App Reset Controls", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEF4444))
                     OutlinedButton(
                         onClick = onRequestResetHours,
                         modifier = Modifier.fillMaxWidth()
@@ -2119,7 +2091,278 @@ private fun GeneralSettingsTab(
 }
 
 // =========================================================================
-// DIALOGS: ADD / EDIT SUBJECT & DAILY TARGET HOURS, MANUAL TIME LOG
+// 3-STEP WIZARD DIALOG: 1. PICK DATE -> 2. PICK SUBJECT -> 3. EDIT OR RESET
+// =========================================================================
+@Composable
+private fun DateSubjectEditResetDialog(
+    theme: AppThemeColors,
+    subjects: List<SubjectEntity>,
+    sessions: List<StudySessionEntity>,
+    onDismiss: () -> Unit,
+    onApplyMinutesForDateAndSubject: (subjectId: Long, dateIso: String, newMinutes: Int) -> Unit
+) {
+    // step 1 = Pick Date, step 2 = Pick Subject on that Date, step 3 = Edit or Reset Time
+    var currentStep by remember { mutableIntStateOf(1) }
+    var wizardMonth by remember { mutableStateOf(YearMonth.now()) }
+    var chosenDateIso by remember { mutableStateOf(LocalDate.now().toString()) }
+    var chosenSubject by remember { mutableStateOf<SubjectEntity?>(null) }
+    var hoursInput by remember { mutableStateOf("0") }
+    var minutesInput by remember { mutableStateOf("0") }
+
+    val totalsByDate = remember(sessions) {
+        sessions.groupBy { it.dateIso }
+            .mapValues { (_, list) -> list.sumOf { it.durationSeconds }.coerceAtLeast(0L) }
+    }
+
+    val subjectSecondsOnChosenDate = remember(sessions, chosenDateIso) {
+        sessions.filter { it.dateIso == chosenDateIso }
+            .groupBy { it.subjectId }
+            .mapValues { (_, list) -> list.sumOf { it.durationSeconds }.coerceAtLeast(0L) }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = when (currentStep) {
+                    1 -> "Step 1: Select Date to Edit/Reset"
+                    2 -> "Step 2: Select Subject ($chosenDateIso)"
+                    else -> "Step 3: Edit or Reset ${chosenSubject?.name ?: ""}"
+                },
+                fontWeight = FontWeight.Bold,
+                fontSize = 17.sp
+            )
+        },
+        text = {
+            when (currentStep) {
+                1 -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Tap any date below to edit or reset its study time:",
+                            fontSize = 12.sp,
+                            color = Color(0xFF9CA3AF)
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedButton(
+                                onClick = { wizardMonth = wizardMonth.minusMonths(1) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("Prev", fontSize = 11.sp)
+                            }
+                            Text(
+                                text = "${wizardMonth.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())} ${wizardMonth.year}",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            OutlinedButton(
+                                onClick = { wizardMonth = wizardMonth.plusMonths(1) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("Next", fontSize = 11.sp)
+                            }
+                        }
+
+                        val firstDay = wizardMonth.atDay(1)
+                        val startOffset = firstDay.dayOfWeek.value % 7
+                        val daysCount = wizardMonth.lengthOfMonth()
+                        val weeksCount = ((startOffset + daysCount + 6) / 7)
+
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            for (w in 0 until weeksCount) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    for (d in 0 until 7) {
+                                        val dayNum = w * 7 + d - startOffset + 1
+                                        if (dayNum in 1..daysCount) {
+                                            val dIso = wizardMonth.atDay(dayNum).toString()
+                                            val sec = totalsByDate[dIso] ?: 0L
+                                            val isSelected = dIso == chosenDateIso
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .height(38.dp)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(
+                                                        when {
+                                                            isSelected -> Color(0xFF10B981)
+                                                            sec > 0L -> Color(0xFF064E3B)
+                                                            else -> Color(0xFF1F2937)
+                                                        }
+                                                    )
+                                                    .clickable {
+                                                        chosenDateIso = dIso
+                                                        currentStep = 2
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                    Text(
+                                                        text = dayNum.toString(),
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isSelected) Color.Black else Color.White
+                                                    )
+                                                    if (sec > 0L) {
+                                                        Text(
+                                                            text = "${(sec / 60L).coerceAtLeast(1L)}m",
+                                                            fontSize = 8.sp,
+                                                            color = if (isSelected) Color.Black else Color(0xFFA7F3D0)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            Spacer(modifier = Modifier.weight(1f).height(38.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                2 -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Tap the subject you want to edit or reset on $chosenDateIso:",
+                            fontSize = 12.sp,
+                            color = Color(0xFF9CA3AF)
+                        )
+                        if (subjects.isEmpty()) {
+                            Text("No subjects added yet.", fontSize = 13.sp)
+                        } else {
+                            subjects.forEach { sub ->
+                                val sec = subjectSecondsOnChosenDate[sub.id] ?: 0L
+                                val title = if (sub.code.isNotBlank()) "${sub.code} — ${sub.name}" else sub.name
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFF1F2937))
+                                        .clickable {
+                                            chosenSubject = sub
+                                            val totalMins = (sec / 60L).toInt()
+                                            hoursInput = (totalMins / 60).toString()
+                                            minutesInput = (totalMins % 60).toString()
+                                            currentStep = 3
+                                        }
+                                        .padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = title,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = formatDurationHoursMinutes(sec),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF10B981)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                else -> {
+                    val sub = chosenSubject
+                    val currentSec = if (sub != null) (subjectSecondsOnChosenDate[sub.id] ?: 0L) else 0L
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Date: $chosenDateIso • Current Recorded: ${formatDurationHoursMinutes(currentSec)}",
+                            fontSize = 12.sp,
+                            color = Color(0xFF10B981)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = hoursInput,
+                                onValueChange = { hoursInput = it },
+                                label = { Text("Hours") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = minutesInput,
+                                onValueChange = { minutesInput = it },
+                                label = { Text("Minutes") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (sub != null) {
+                                    onApplyMinutesForDateAndSubject(sub.id, chosenDateIso, 0)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Reset ${sub?.name ?: "Subject"} to 0m on $chosenDateIso",
+                                color = Color(0xFFEF4444),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            when (currentStep) {
+                1 -> {
+                    Button(onClick = { currentStep = 2 }) {
+                        Text("Next: Pick Subject")
+                    }
+                }
+                2 -> {
+                    TextButton(onClick = { currentStep = 1 }) {
+                        Text("Back to Calendar")
+                    }
+                }
+                else -> {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = { currentStep = 2 }) {
+                            Text("Back")
+                        }
+                        Button(
+                            onClick = {
+                                val sub = chosenSubject
+                                if (sub != null) {
+                                    val h = hoursInput.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                                    val m = minutesInput.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                                    val totalMins = (h * 60 + m).coerceAtLeast(0)
+                                    onApplyMinutesForDateAndSubject(sub.id, chosenDateIso, totalMins)
+                                }
+                            }
+                        ) {
+                            Text("Save Updated Time")
+                        }
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+// =========================================================================
+// DIALOG: ADD / EDIT SUBJECT & DAILY TARGET HOURS
 // =========================================================================
 @Composable
 private fun AddOrEditSubjectDialog(
@@ -2154,7 +2397,7 @@ private fun AddOrEditSubjectDialog(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("Subject / Course Name *") },
-                    placeholder = { Text("e.g. Structural Analysis / Physics") },
+                    placeholder = { Text("e.g. RCC-1 / OCF / Structural Analysis") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -2162,7 +2405,7 @@ private fun AddOrEditSubjectDialog(
                     value = code,
                     onValueChange = { code = it },
                     label = { Text("Course Code (Optional)") },
-                    placeholder = { Text("e.g. CEE 4311") },
+                    placeholder = { Text("e.g. CEE 4313") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -2226,77 +2469,6 @@ private fun AddOrEditSubjectDialog(
                     }
                 ) {
                     Text("Save")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
-
-@Composable
-private fun ManualLogDialog(
-    summary: SubjectStudySummary,
-    onDismiss: () -> Unit,
-    onAddMinutes: (minutes: Int, note: String) -> Unit,
-    onSubtractMinutes: (minutes: Int) -> Unit,
-    onResetSubjectZero: () -> Unit
-) {
-    var minutesText by remember { mutableStateOf("30") }
-    var noteText by remember { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Adjust Today's Time — ${summary.name}", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Studied Today: ${formatDurationHoursMinutes(summary.totalSeconds)}",
-                    fontSize = 12.sp,
-                    color = Color(0xFF10B981)
-                )
-                OutlinedTextField(
-                    value = minutesText,
-                    onValueChange = { minutesText = it },
-                    label = { Text("Minutes (e.g. 20 or 60)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = noteText,
-                    onValueChange = { noteText = it },
-                    label = { Text("Topic / Note (Optional)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedButton(
-                    onClick = onResetSubjectZero,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Reset This Subject to 0m", color = Color(0xFFF87171), fontSize = 12.sp)
-                }
-            }
-        },
-        confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        val mins = minutesText.toIntOrNull()?.coerceAtLeast(1) ?: 30
-                        onSubtractMinutes(mins)
-                    }
-                ) {
-                    Text("- Subtract", color = Color(0xFFFBBF24), fontSize = 12.sp)
-                }
-                Button(
-                    onClick = {
-                        val mins = minutesText.toIntOrNull()?.coerceAtLeast(1) ?: 30
-                        onAddMinutes(mins, noteText)
-                    }
-                ) {
-                    Text("+ Add Time", fontSize = 12.sp)
                 }
             }
         },
