@@ -9,6 +9,12 @@ import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
 import android.view.View
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
@@ -23,6 +29,9 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 import kotlin.math.roundToInt
 
+// =========================================================================
+// WIDGET 1: SUBJECT PROGRESS BARS WIDGET (Active First, then % Descending)
+// =========================================================================
 class StudyTrackerWidgetProvider : AppWidgetProvider() {
 
     override fun onUpdate(
@@ -31,7 +40,7 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
         appWidgetIds: IntArray
     ) {
         val pendingResult = goAsync()
-        refreshWidgetsInternal(context.applicationContext, appWidgetManager, appWidgetIds, pendingResult)
+        refreshAllWidgetsInternal(context.applicationContext, pendingResult)
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -53,12 +62,7 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
         private const val LOCKSCREEN_SUMMARY_NOTIFICATION_ID = 1005
 
         fun updateAllWidgets(context: Context) {
-            val appContext = context.applicationContext
-            val manager = AppWidgetManager.getInstance(appContext)
-            val ids = manager.getAppWidgetIds(
-                ComponentName(appContext, StudyTrackerWidgetProvider::class.java)
-            )
-            refreshWidgetsInternal(appContext, manager, ids, null)
+            refreshAllWidgetsInternal(context.applicationContext, null)
         }
 
         private fun formatHm(seconds: Long): String {
@@ -68,19 +72,29 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
             return "${h}h ${m}m"
         }
 
-        private fun refreshWidgetsInternal(
+        private fun parseAndroidColor(hex: String): Int {
+            return runCatching { Color.parseColor(hex) }.getOrDefault(Color.parseColor("#10B981"))
+        }
+
+        internal fun refreshAllWidgetsInternal(
             context: Context,
-            appWidgetManager: AppWidgetManager,
-            appWidgetIds: IntArray,
             pendingResult: BroadcastReceiver.PendingResult?
         ) {
             CoroutineScope(Dispatchers.IO).launch {
                 try {
+                    val appWidgetManager = AppWidgetManager.getInstance(context)
+                    val listWidgetIds = appWidgetManager.getAppWidgetIds(
+                        ComponentName(context, StudyTrackerWidgetProvider::class.java)
+                    )
+                    val pieWidgetIds = appWidgetManager.getAppWidgetIds(
+                        ComponentName(context, StudyPieWidgetProvider::class.java)
+                    )
+
                     val todayIso = LocalDate.now().toString()
                     val dao = StudyTrackerDatabase.getInstance(context).dao()
                     val activeSubjects = dao.getAllSubjectsOnce().filter { !it.isArchived }
 
-                    // STRICTLY filter sessions by TODAY (todayIso) so each new day starts at 0%
+                    // Strictly filter sessions by TODAY (todayIso) so each new day starts at 0%
                     val todaySessionsBySub = dao.getAllSessionsOnce()
                         .filter { it.dateIso == todayIso }
                         .groupBy { it.subjectId }
@@ -104,10 +118,10 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                         )
                     }
 
-                    // SORTING RULE FOR WIDGETS:
-                    // 1st: The subject currently being studied right now (active timer running)
-                    // 2nd: Subjects ordered by highest completion percentage descending (then studied seconds descending)
-                    // Last: Unstudied subjects (0%) at the bottom
+                    // Priority Sort:
+                    // 1. Currently active subject (timer running)
+                    // 2. Highest completion percentage descending (then studied seconds descending)
+                    // 3. Unstudied subjects (0%) at the bottom
                     val summaries = rawSummaries.sortedWith(
                         compareByDescending<SubjectStudySummary> {
                             activeSnapshot.isRunning && it.subjectId == activeSnapshot.subjectId
@@ -124,6 +138,7 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                             .roundToInt()
                             .coerceIn(0, 100)
                     } else 0
+                    val remainingPercent = (100 - overallPercent).coerceIn(0, 100)
 
                     val openAppIntent = PendingIntent.getActivity(
                         context,
@@ -132,18 +147,18 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                     )
 
-                    // 1. Update all Home Screen Widgets with sorted subjects
-                    if (appWidgetIds.isNotEmpty()) {
-                        for (widgetId in appWidgetIds) {
+                    // -----------------------------------------------------------------
+                    // 1. Update WIDGET 1: Progress Bars List Widget
+                    // -----------------------------------------------------------------
+                    if (listWidgetIds.isNotEmpty()) {
+                        for (widgetId in listWidgetIds) {
                             val views = RemoteViews(context.packageName, R.layout.widget_study_tracker)
                             views.setOnClickPendingIntent(R.id.widget_root, openAppIntent)
+                            views.setViewVisibility(R.id.widget_pie_image, View.GONE)
 
                             val studiedHrs = String.format("%.1fh", totalStudiedSec / 3600.0)
                             val targetHrs = String.format("%.1fh", totalTargetSec / 3600.0)
-                            views.setTextViewText(
-                                R.id.widget_header_title,
-                                "Today ($todayIso)"
-                            )
+                            views.setTextViewText(R.id.widget_header_title, "Today ($todayIso)")
                             views.setTextViewText(
                                 R.id.widget_header_overall,
                                 "$overallPercent% ($studiedHrs / $targetHrs)"
@@ -185,7 +200,40 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                         }
                     }
 
-                    // 2. Update Lock-Screen Daily Study Progress Card using the same priority order
+                    // -----------------------------------------------------------------
+                    // 2. Update WIDGET 2: Pie Chart & Subject Color Legend Widget
+                    // -----------------------------------------------------------------
+                    if (pieWidgetIds.isNotEmpty()) {
+                        val pieBitmap = renderPieChartAndLegendBitmap(
+                            summaries = summaries,
+                            activeSubjectId = if (activeSnapshot.isRunning) activeSnapshot.subjectId else 0L,
+                            totalStudiedSec = totalStudiedSec,
+                            totalTargetSec = totalTargetSec,
+                            overallPercent = overallPercent,
+                            remainingPercent = remainingPercent
+                        )
+                        for (widgetId in pieWidgetIds) {
+                            val views = RemoteViews(context.packageName, R.layout.widget_study_tracker)
+                            views.setOnClickPendingIntent(R.id.widget_root, openAppIntent)
+                            views.removeAllViews(R.id.widget_courses_container)
+                            views.setViewVisibility(R.id.widget_empty_view, View.GONE)
+
+                            views.setTextViewText(R.id.widget_header_title, "Study Pie ($todayIso)")
+                            views.setTextViewText(
+                                R.id.widget_header_overall,
+                                "Studied: $overallPercent% • Left: $remainingPercent%"
+                            )
+
+                            views.setViewVisibility(R.id.widget_pie_image, View.VISIBLE)
+                            views.setImageViewBitmap(R.id.widget_pie_image, pieBitmap)
+
+                            appWidgetManager.updateAppWidget(widgetId, views)
+                        }
+                    }
+
+                    // -----------------------------------------------------------------
+                    // 3. Update Lock-Screen Daily Study Progress Card
+                    // -----------------------------------------------------------------
                     updateLockScreenProgressCard(
                         context = context,
                         todayIso = todayIso,
@@ -200,6 +248,164 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                     pendingResult?.finish()
                 }
             }
+        }
+
+        private fun renderPieChartAndLegendBitmap(
+            summaries: List<SubjectStudySummary>,
+            activeSubjectId: Long,
+            totalStudiedSec: Long,
+            totalTargetSec: Long,
+            overallPercent: Int,
+            remainingPercent: Int
+        ): Bitmap {
+            val rowCount = summaries.size.coerceIn(1, 10)
+            val bmpWidth = 820
+            val bmpHeight = (290).coerceAtLeast(80 + rowCount * 42)
+            val bitmap = Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+
+            // Left side: Pie Chart Circle
+            val pieRadius = 105f
+            val cx = 130f
+            val cy = 125f
+            val pieRect = RectF(cx - pieRadius, cy - pieRadius, cx + pieRadius, cy + pieRadius)
+
+            // 1. Draw the Base Blank / White Pie Circle (represents 100% unstudied / remaining target)
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#F3F4F6") // Clean white/light-silver blank circle when 0% studied
+            canvas.drawOval(pieRect, paint)
+
+            // 2. Fill studied slices in each subject's color proportional to Total Daily Target
+            val denominatorSec = totalTargetSec.coerceAtLeast(totalStudiedSec).coerceAtLeast(1L)
+            var currentAngle = -90f
+
+            val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 3f
+                color = Color.parseColor("#080B12")
+            }
+
+            summaries.forEach { item ->
+                val cappedSec = item.totalSeconds.coerceAtLeast(0L)
+                if (cappedSec > 0L) {
+                    val sweep = ((cappedSec.toDouble() / denominatorSec.toDouble()) * 360.0).toFloat()
+                        .coerceIn(0f, 360f - (currentAngle + 90f))
+                    if (sweep > 0.5f) {
+                        paint.style = Paint.Style.FILL
+                        paint.color = parseAndroidColor(item.colorHex)
+                        canvas.drawArc(pieRect, currentAngle, sweep, true, paint)
+                        canvas.drawArc(pieRect, currentAngle, sweep, true, dividerPaint)
+                        currentAngle += sweep
+                    }
+                }
+            }
+
+            // Outer ring border around the pie chart
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 3f
+            paint.color = Color.parseColor("#374151")
+            canvas.drawOval(pieRect, paint)
+
+            // Bottom captions under the Pie Chart: Studied % vs Remaining %
+            val remSec = (totalTargetSec - totalStudiedSec).coerceAtLeast(0L)
+            textPaint.textAlign = Paint.Align.CENTER
+            textPaint.textSize = 23f
+            textPaint.color = Color.parseColor("#10B981")
+            canvas.drawText(
+                "Studied: $overallPercent% (${formatHm(totalStudiedSec)})",
+                cx,
+                cy + pieRadius + 30f,
+                textPaint
+            )
+
+            textPaint.textSize = 20f
+            textPaint.color = Color.parseColor("#E5E7EB")
+            canvas.drawText(
+                "Remaining: $remainingPercent% (${formatHm(remSec)})",
+                cx,
+                cy + pieRadius + 56f,
+                textPaint
+            )
+
+            // Right side: Subject Color Legend (with Subject Name, Color Swatch, and Studied % vs Unstudied)
+            val legendStartX = 275f
+            var curY = 34f
+            textPaint.textAlign = Paint.Align.LEFT
+
+            // Legend Row 0: White/Blank = Remaining Target
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#F3F4F6")
+            canvas.drawRoundRect(
+                RectF(legendStartX, curY - 18f, legendStartX + 20f, curY + 2f),
+                5f,
+                5f,
+                paint
+            )
+            textPaint.textSize = 21f
+            textPaint.color = Color.parseColor("#D1D5DB")
+            canvas.drawText(
+                "Blank/White = Remaining ($remainingPercent%)",
+                legendStartX + 30f,
+                curY,
+                textPaint
+            )
+            curY += 38f
+
+            if (summaries.isEmpty()) {
+                textPaint.textSize = 22f
+                textPaint.color = Color.parseColor("#9CA3AF")
+                canvas.drawText("Tap to add your subjects", legendStartX, curY + 20f, textPaint)
+            } else {
+                summaries.take(9).forEach { item ->
+                    val isActive = item.subjectId == activeSubjectId
+                    val subPct = item.completionPercent.roundToInt().coerceIn(0, 100)
+                    val isStudied = item.totalSeconds > 0L
+
+                    // Draw subject color dot/square
+                    paint.style = Paint.Style.FILL
+                    paint.color = parseAndroidColor(item.colorHex)
+                    canvas.drawRoundRect(
+                        RectF(legendStartX, curY - 18f, legendStartX + 20f, curY + 2f),
+                        5f,
+                        5f,
+                        paint
+                    )
+
+                    val rawName = if (item.code.isNotBlank()) "${item.code} (${item.name})" else item.name
+                    val clippedName = if (rawName.length > 18) rawName.take(17) + "…" else rawName
+                    val prefix = if (isActive) "▶ " else ""
+                    val statusSuffix = if (isStudied) {
+                        "$subPct% (${formatHm(item.totalSeconds)}/${formatHm(item.targetSeconds)})"
+                    } else {
+                        "0% (Not studied)"
+                    }
+
+                    textPaint.textSize = 21f
+                    textPaint.color = if (isActive) {
+                        Color.parseColor("#10B981")
+                    } else if (isStudied) {
+                        Color.WHITE
+                    } else {
+                        Color.parseColor("#9CA3AF")
+                    }
+
+                    canvas.drawText(
+                        "$prefix$clippedName: $statusSuffix",
+                        legendStartX + 30f,
+                        curY,
+                        textPaint
+                    )
+                    curY += 36f
+                }
+            }
+
+            return bitmap
         }
 
         private fun updateLockScreenProgressCard(
@@ -252,6 +458,34 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                     .build()
 
                 nm.notify(LOCKSCREEN_SUMMARY_NOTIFICATION_ID, notification)
+            }
+        }
+    }
+}
+
+// =========================================================================
+// WIDGET 2: PIE CHART & SUBJECT COLOR LEGEND WIDGET
+// =========================================================================
+class StudyPieWidgetProvider : AppWidgetProvider() {
+
+    override fun onUpdate(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        appWidgetIds: IntArray
+    ) {
+        val pendingResult = goAsync()
+        StudyTrackerWidgetProvider.refreshAllWidgetsInternal(context.applicationContext, pendingResult)
+    }
+
+    override fun onReceive(context: Context, intent: Intent) {
+        super.onReceive(context, intent)
+        when (intent.action) {
+            StudyTrackerWidgetProvider.ACTION_REFRESH_WIDGET,
+            Intent.ACTION_DATE_CHANGED,
+            Intent.ACTION_TIME_CHANGED,
+            Intent.ACTION_TIMEZONE_CHANGED,
+            Intent.ACTION_USER_PRESENT -> {
+                StudyTrackerWidgetProvider.updateAllWidgets(context)
             }
         }
     }
