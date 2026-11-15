@@ -80,13 +80,13 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                     val dao = StudyTrackerDatabase.getInstance(context).dao()
                     val activeSubjects = dao.getAllSubjectsOnce().filter { !it.isArchived }
 
-                    // STRICTLY filter sessions by TODAY (todayIso) so yesterday's study never carries over!
+                    // STRICTLY filter sessions by TODAY (todayIso) so each new day starts at 0%
                     val todaySessionsBySub = dao.getAllSessionsOnce()
                         .filter { it.dateIso == todayIso }
                         .groupBy { it.subjectId }
 
                     val activeSnapshot = StudyTimerService.timerState.value
-                    val summaries = activeSubjects.map { sub ->
+                    val rawSummaries = activeSubjects.map { sub ->
                         val subTodaySec = todaySessionsBySub[sub.id].orEmpty()
                             .sumOf { it.durationSeconds }
                             .coerceAtLeast(0L)
@@ -104,6 +104,19 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                         )
                     }
 
+                    // SORTING RULE FOR WIDGETS:
+                    // 1st: The subject currently being studied right now (active timer running)
+                    // 2nd: Subjects ordered by highest completion percentage descending (then studied seconds descending)
+                    // Last: Unstudied subjects (0%) at the bottom
+                    val summaries = rawSummaries.sortedWith(
+                        compareByDescending<SubjectStudySummary> {
+                            activeSnapshot.isRunning && it.subjectId == activeSnapshot.subjectId
+                        }
+                            .thenByDescending { it.completionPercent }
+                            .thenByDescending { it.totalSeconds }
+                            .thenBy { it.subjectId }
+                    )
+
                     val totalStudiedSec = summaries.sumOf { it.totalSeconds.coerceAtLeast(0L) }
                     val totalTargetSec = summaries.sumOf { it.targetSeconds }
                     val overallPercent = if (totalTargetSec > 0L) {
@@ -119,7 +132,7 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                     )
 
-                    // 1. Update all Home Screen Widgets with TODAY'S percentage (0% at start of each new day)
+                    // 1. Update all Home Screen Widgets with sorted subjects
                     if (appWidgetIds.isNotEmpty()) {
                         for (widgetId in appWidgetIds) {
                             val views = RemoteViews(context.packageName, R.layout.widget_study_tracker)
@@ -142,12 +155,19 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                                 views.setViewVisibility(R.id.widget_empty_view, View.VISIBLE)
                             } else {
                                 views.setViewVisibility(R.id.widget_empty_view, View.GONE)
-                                summaries.take(8).forEach { item ->
+                                summaries.take(12).forEach { item ->
                                     val row = RemoteViews(context.packageName, R.layout.widget_course_row)
-                                    val displayName = if (item.code.isNotBlank()) {
+                                    val isCurrentlyStudying = activeSnapshot.isRunning &&
+                                        activeSnapshot.subjectId == item.subjectId
+                                    val baseTitle = if (item.code.isNotBlank()) {
                                         "${item.code} • ${item.name}"
                                     } else {
                                         item.name
+                                    }
+                                    val displayName = if (isCurrentlyStudying) {
+                                        if (activeSnapshot.isPaused) "⏸ $baseTitle" else "▶ $baseTitle"
+                                    } else {
+                                        baseTitle
                                     }
                                     val pct = item.completionPercent.roundToInt().coerceIn(0, 100)
                                     val completedH = String.format("%.1fh", item.totalSeconds.coerceAtLeast(0L) / 3600.0)
@@ -165,11 +185,12 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                         }
                     }
 
-                    // 2. Update Lock-Screen Daily Study Progress Card (visible on Lock Screen without unlocking)
+                    // 2. Update Lock-Screen Daily Study Progress Card using the same priority order
                     updateLockScreenProgressCard(
                         context = context,
                         todayIso = todayIso,
                         summaries = summaries,
+                        activeSubjectId = if (activeSnapshot.isRunning) activeSnapshot.subjectId else 0L,
                         totalStudiedSec = totalStudiedSec,
                         totalTargetSec = totalTargetSec,
                         overallPercent = overallPercent,
@@ -185,6 +206,7 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
             context: Context,
             todayIso: String,
             summaries: List<SubjectStudySummary>,
+            activeSubjectId: Long,
             totalStudiedSec: Long,
             totalTargetSec: Long,
             overallPercent: Int,
@@ -211,7 +233,8 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                 val perCourseLines = summaries.joinToString("\n") { item ->
                     val pct = item.completionPercent.roundToInt().coerceIn(0, 100)
                     val title = if (item.code.isNotBlank()) "${item.code} (${item.name})" else item.name
-                    "• $title: $pct%  (${formatHm(item.totalSeconds)} / ${formatHm(item.targetSeconds)})"
+                    val prefix = if (item.subjectId == activeSubjectId) "▶ " else "• "
+                    "$prefix$title: $pct%  (${formatHm(item.totalSeconds)} / ${formatHm(item.targetSeconds)})"
                 }
 
                 val summaryTitle = "Today's Study: $overallPercent% (${formatHm(totalStudiedSec)} / ${formatHm(totalTargetSec)})"
