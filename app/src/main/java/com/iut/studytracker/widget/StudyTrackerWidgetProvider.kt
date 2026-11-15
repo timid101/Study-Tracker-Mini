@@ -30,7 +30,9 @@ import java.time.LocalDate
 import kotlin.math.roundToInt
 
 // =========================================================================
-// WIDGET 1: SUBJECT PROGRESS BARS WIDGET (Active First, then % Descending)
+// WIDGET 1 & 2: PROGRESS BARS + PIE CHART WITH SUBJECT COLOR LEGEND
+// Uses ONLY standard Android SDK views (android.R.layout.activity_list_item)
+// and existing v2.0 R.id constants so it compiles without XML edits!
 // =========================================================================
 class StudyTrackerWidgetProvider : AppWidgetProvider() {
 
@@ -119,9 +121,9 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                     }
 
                     // Priority Sort:
-                    // 1. Currently active subject (timer running)
-                    // 2. Highest completion percentage descending (then studied seconds descending)
-                    // 3. Unstudied subjects (0%) at the bottom
+                    // 1st: The subject currently being studied right now (active timer running)
+                    // 2nd: Studied subjects ordered by highest completion percentage descending
+                    // Last: Unstudied subjects (0%) at the bottom
                     val summaries = rawSummaries.sortedWith(
                         compareByDescending<SubjectStudySummary> {
                             activeSnapshot.isRunning && it.subjectId == activeSnapshot.subjectId
@@ -147,21 +149,29 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                     )
 
+                    val pieBitmap = renderPieChartAndLegendBitmap(
+                        summaries = summaries,
+                        activeSubjectId = if (activeSnapshot.isRunning) activeSnapshot.subjectId else 0L,
+                        totalStudiedSec = totalStudiedSec,
+                        totalTargetSec = totalTargetSec,
+                        overallPercent = overallPercent,
+                        remainingPercent = remainingPercent
+                    )
+
                     // -----------------------------------------------------------------
-                    // 1. Update WIDGET 1: Progress Bars List Widget
+                    // 1. Update WIDGET 1 (Shows Pie Chart + Sorted Subject Progress Bars)
                     // -----------------------------------------------------------------
                     if (listWidgetIds.isNotEmpty()) {
                         for (widgetId in listWidgetIds) {
                             val views = RemoteViews(context.packageName, R.layout.widget_study_tracker)
                             views.setOnClickPendingIntent(R.id.widget_root, openAppIntent)
-                            views.setViewVisibility(R.id.widget_pie_image, View.GONE)
 
                             val studiedHrs = String.format("%.1fh", totalStudiedSec / 3600.0)
                             val targetHrs = String.format("%.1fh", totalTargetSec / 3600.0)
                             views.setTextViewText(R.id.widget_header_title, "Today ($todayIso)")
                             views.setTextViewText(
                                 R.id.widget_header_overall,
-                                "$overallPercent% ($studiedHrs / $targetHrs)"
+                                "Studied: $overallPercent% • Left: $remainingPercent% ($studiedHrs/$targetHrs)"
                             )
 
                             views.removeAllViews(R.id.widget_courses_container)
@@ -170,7 +180,15 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                                 views.setViewVisibility(R.id.widget_empty_view, View.VISIBLE)
                             } else {
                                 views.setViewVisibility(R.id.widget_empty_view, View.GONE)
-                                summaries.take(12).forEach { item ->
+
+                                // Add Pie Chart + Colored Subject Legend Row at the top of the widget container!
+                                val pieRow = RemoteViews(context.packageName, android.R.layout.activity_list_item)
+                                pieRow.setViewVisibility(android.R.id.text1, View.GONE)
+                                pieRow.setImageViewBitmap(android.R.id.icon, pieBitmap)
+                                views.addView(R.id.widget_courses_container, pieRow)
+
+                                // Add Sorted Subject Progress Bar Rows below the Pie Chart
+                                summaries.take(10).forEach { item ->
                                     val row = RemoteViews(context.packageName, R.layout.widget_course_row)
                                     val isCurrentlyStudying = activeSnapshot.isRunning &&
                                         activeSnapshot.subjectId == item.subjectId
@@ -189,8 +207,10 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                                     val targetH = String.format("%.1fh", item.targetHoursPerWeek)
 
                                     row.setTextViewText(R.id.row_course_name, displayName)
+                                    row.setTextColor(R.id.row_course_name, parseAndroidColor(item.colorHex))
                                     row.setTextViewText(R.id.row_course_hours, "$completedH / $targetH")
                                     row.setTextViewText(R.id.row_course_percent, "$pct%")
+                                    row.setTextColor(R.id.row_course_percent, parseAndroidColor(item.colorHex))
                                     row.setProgressBar(R.id.row_course_progress, 100, pct, false)
                                     views.addView(R.id.widget_courses_container, row)
                                 }
@@ -201,17 +221,9 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                     }
 
                     // -----------------------------------------------------------------
-                    // 2. Update WIDGET 2: Pie Chart & Subject Color Legend Widget
+                    // 2. Update WIDGET 2 (Standalone Pie Chart & Subject Color Legend Widget)
                     // -----------------------------------------------------------------
                     if (pieWidgetIds.isNotEmpty()) {
-                        val pieBitmap = renderPieChartAndLegendBitmap(
-                            summaries = summaries,
-                            activeSubjectId = if (activeSnapshot.isRunning) activeSnapshot.subjectId else 0L,
-                            totalStudiedSec = totalStudiedSec,
-                            totalTargetSec = totalTargetSec,
-                            overallPercent = overallPercent,
-                            remainingPercent = remainingPercent
-                        )
                         for (widgetId in pieWidgetIds) {
                             val views = RemoteViews(context.packageName, R.layout.widget_study_tracker)
                             views.setOnClickPendingIntent(R.id.widget_root, openAppIntent)
@@ -224,8 +236,10 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                                 "Studied: $overallPercent% • Left: $remainingPercent%"
                             )
 
-                            views.setViewVisibility(R.id.widget_pie_image, View.VISIBLE)
-                            views.setImageViewBitmap(R.id.widget_pie_image, pieBitmap)
+                            val pieRow = RemoteViews(context.packageName, android.R.layout.activity_list_item)
+                            pieRow.setViewVisibility(android.R.id.text1, View.GONE)
+                            pieRow.setImageViewBitmap(android.R.id.icon, pieBitmap)
+                            views.addView(R.id.widget_courses_container, pieRow)
 
                             appWidgetManager.updateAppWidget(widgetId, views)
                         }
@@ -258,9 +272,9 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
             overallPercent: Int,
             remainingPercent: Int
         ): Bitmap {
-            val rowCount = summaries.size.coerceIn(1, 10)
-            val bmpWidth = 820
-            val bmpHeight = (290).coerceAtLeast(80 + rowCount * 42)
+            val rowCount = summaries.size.coerceIn(1, 8)
+            val bmpWidth = 540
+            val bmpHeight = 200.coerceAtLeast(52 + rowCount * 26)
             val bitmap = Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
 
@@ -271,14 +285,14 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
             }
 
             // Left side: Pie Chart Circle
-            val pieRadius = 105f
-            val cx = 130f
-            val cy = 125f
+            val pieRadius = 66f
+            val cx = 82f
+            val cy = 78f
             val pieRect = RectF(cx - pieRadius, cy - pieRadius, cx + pieRadius, cy + pieRadius)
 
             // 1. Draw the Base Blank / White Pie Circle (represents 100% unstudied / remaining target)
             paint.style = Paint.Style.FILL
-            paint.color = Color.parseColor("#F3F4F6") // Clean white/light-silver blank circle when 0% studied
+            paint.color = Color.parseColor("#F3F4F6")
             canvas.drawOval(pieRect, paint)
 
             // 2. Fill studied slices in each subject's color proportional to Total Daily Target
@@ -287,7 +301,7 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
 
             val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE
-                strokeWidth = 3f
+                strokeWidth = 2f
                 color = Color.parseColor("#080B12")
             }
 
@@ -308,72 +322,71 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
 
             // Outer ring border around the pie chart
             paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 3f
+            paint.strokeWidth = 2.5f
             paint.color = Color.parseColor("#374151")
             canvas.drawOval(pieRect, paint)
 
             // Bottom captions under the Pie Chart: Studied % vs Remaining %
             val remSec = (totalTargetSec - totalStudiedSec).coerceAtLeast(0L)
             textPaint.textAlign = Paint.Align.CENTER
-            textPaint.textSize = 23f
+            textPaint.textSize = 15f
             textPaint.color = Color.parseColor("#10B981")
             canvas.drawText(
                 "Studied: $overallPercent% (${formatHm(totalStudiedSec)})",
                 cx,
-                cy + pieRadius + 30f,
+                cy + pieRadius + 22f,
                 textPaint
             )
 
-            textPaint.textSize = 20f
+            textPaint.textSize = 13.5f
             textPaint.color = Color.parseColor("#E5E7EB")
             canvas.drawText(
-                "Remaining: $remainingPercent% (${formatHm(remSec)})",
+                "Left: $remainingPercent% (${formatHm(remSec)})",
                 cx,
-                cy + pieRadius + 56f,
+                cy + pieRadius + 40f,
                 textPaint
             )
 
             // Right side: Subject Color Legend (with Subject Name, Color Swatch, and Studied % vs Unstudied)
-            val legendStartX = 275f
-            var curY = 34f
+            val legendStartX = 174f
+            var curY = 24f
             textPaint.textAlign = Paint.Align.LEFT
 
             // Legend Row 0: White/Blank = Remaining Target
             paint.style = Paint.Style.FILL
             paint.color = Color.parseColor("#F3F4F6")
             canvas.drawRoundRect(
-                RectF(legendStartX, curY - 18f, legendStartX + 20f, curY + 2f),
-                5f,
-                5f,
+                RectF(legendStartX, curY - 12f, legendStartX + 14f, curY + 2f),
+                3f,
+                3f,
                 paint
             )
-            textPaint.textSize = 21f
+            textPaint.textSize = 14f
             textPaint.color = Color.parseColor("#D1D5DB")
             canvas.drawText(
-                "Blank/White = Remaining ($remainingPercent%)",
-                legendStartX + 30f,
+                "White = Remaining Target ($remainingPercent%)",
+                legendStartX + 20f,
                 curY,
                 textPaint
             )
-            curY += 38f
+            curY += 24f
 
             if (summaries.isEmpty()) {
-                textPaint.textSize = 22f
+                textPaint.textSize = 14f
                 textPaint.color = Color.parseColor("#9CA3AF")
-                canvas.drawText("Tap to add your subjects", legendStartX, curY + 20f, textPaint)
+                canvas.drawText("Tap to add your subjects", legendStartX, curY + 14f, textPaint)
             } else {
-                summaries.take(9).forEach { item ->
+                summaries.take(8).forEach { item ->
                     val isActive = item.subjectId == activeSubjectId
                     val subPct = item.completionPercent.roundToInt().coerceIn(0, 100)
                     val isStudied = item.totalSeconds > 0L
 
-                    // Draw subject color dot/square
                     paint.style = Paint.Style.FILL
                     paint.color = parseAndroidColor(item.colorHex)
                     canvas.drawRoundRect(
-                        RectF(legendStartX, curY - 18f, legendStartX + 20f, curY + 2f),
-                        5f,
-                        5f,
+                        RectF(legendStartX, curY - 12f, legendStartX + 14f, curY + 2f),
+                        3f,
+                        3f,
                         paint
                     )
 
@@ -386,7 +399,7 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
                         "0% (Not studied)"
                     }
 
-                    textPaint.textSize = 21f
+                    textPaint.textSize = 14f
                     textPaint.color = if (isActive) {
                         Color.parseColor("#10B981")
                     } else if (isStudied) {
@@ -397,11 +410,11 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
 
                     canvas.drawText(
                         "$prefix$clippedName: $statusSuffix",
-                        legendStartX + 30f,
+                        legendStartX + 20f,
                         curY,
                         textPaint
                     )
-                    curY += 36f
+                    curY += 23f
                 }
             }
 
@@ -464,7 +477,7 @@ class StudyTrackerWidgetProvider : AppWidgetProvider() {
 }
 
 // =========================================================================
-// WIDGET 2: PIE CHART & SUBJECT COLOR LEGEND WIDGET
+// WIDGET 2: STANDALONE PIE CHART & SUBJECT COLOR LEGEND WIDGET
 // =========================================================================
 class StudyPieWidgetProvider : AppWidgetProvider() {
 
