@@ -459,6 +459,7 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
     // Dialog states
     var showAddSubjectDialog by remember { mutableStateOf(false) }
     var editingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
+    var loggingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
     var deletingSummary by remember { mutableStateOf<SubjectStudySummary?>(null) }
     var confirmResetMode by remember { mutableStateOf<String?>(null) }
     var showDateSubjectEditWizard by remember { mutableStateOf(false) }
@@ -632,6 +633,7 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
                         }
                         viewModel.startSubjectTimer(summary, mode, mins)
                     },
+                    onLogManualClick = { loggingSummary = it },
                     onAddSubjectClick = { showAddSubjectDialog = true }
                 )
                 2 -> StudyCalendarWithGraphsTab(
@@ -701,6 +703,27 @@ fun MainTrackerScreen(viewModel: StudyTrackerViewModel) {
                 editingSummary = null
             },
             onConfirmAndAddAnother = null
+        )
+    }
+
+    loggingSummary?.let { item ->
+        ManualLogDialog(
+            summary = item,
+            onDismiss = { loggingSummary = null },
+            onAddMinutes = { mins, note ->
+                viewModel.logManualSession(item.subjectId, mins, note)
+                loggingSummary = null
+            },
+            onSubtractMinutes = { mins ->
+                val currentMins = (item.totalSeconds / 60L).toInt()
+                val newTotalMins = (currentMins - mins).coerceAtLeast(0)
+                setExactSubjectMinutesOnDate(item.subjectId, todayIso, newTotalMins)
+                loggingSummary = null
+            },
+            onResetSubjectZero = {
+                setExactSubjectMinutesOnDate(item.subjectId, todayIso, 0)
+                loggingSummary = null
+            }
         )
     }
 
@@ -1038,6 +1061,7 @@ private fun SubjectTimersTab(
     strictFocus15sEnabled: Boolean,
     onSaveAndStopTimer: () -> Unit,
     onStartSubjectTimerWithAutoSave: (SubjectStudySummary, TimerMode, Int) -> Unit,
+    onLogManualClick: (SubjectStudySummary) -> Unit,
     onAddSubjectClick: () -> Unit
 ) {
     val active = state.activeTimer
@@ -1289,25 +1313,37 @@ private fun SubjectTimersTab(
                                 }
                             }
                         } else {
-                            Button(
-                                onClick = {
-                                    onStartSubjectTimerWithAutoSave(item, selectedMode, countdownMins)
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
+                            Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = if (selectedMode == TimerMode.STOPWATCH) {
-                                        "Start Timer for ${item.name}"
-                                    } else {
-                                        "Start ${countdownMins}m Alarm Timer for ${item.name}"
+                                Button(
+                                    onClick = {
+                                        onStartSubjectTimerWithAutoSave(item, selectedMode, countdownMins)
                                     },
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
-                                )
+                                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (selectedMode == TimerMode.STOPWATCH) {
+                                            "Start Timer"
+                                        } else {
+                                            "Start ${countdownMins}m"
+                                        },
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = { onLogManualClick(item) },
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("+/- Time", fontSize = 12.sp, color = theme.textPrimary, fontWeight = FontWeight.SemiBold)
+                                }
                             }
                         }
                     }
@@ -2469,6 +2505,76 @@ private fun AddOrEditSubjectDialog(
                     }
                 ) {
                     Text("Save")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+@Composable
+private fun ManualLogDialog(
+    summary: SubjectStudySummary,
+    onDismiss: () -> Unit,
+    onAddMinutes: (minutes: Int, note: String) -> Unit,
+    onSubtractMinutes: (minutes: Int) -> Unit,
+    onResetSubjectZero: () -> Unit
+) {
+    var minutesText by remember { mutableStateOf("30") }
+    var noteText by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Adjust Today's Time — ${summary.name}", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Studied Today: ${formatDurationHoursMinutes(summary.totalSeconds)}",
+                    fontSize = 12.sp,
+                    color = Color(0xFF10B981)
+                )
+                OutlinedTextField(
+                    value = minutesText,
+                    onValueChange = { minutesText = it },
+                    label = { Text("Minutes (e.g. 20 or 60)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = noteText,
+                    onValueChange = { noteText = it },
+                    label = { Text("Topic / Note (Optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedButton(
+                    onClick = onResetSubjectZero,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Reset Today's Time for This Subject to 0m", color = Color(0xFFF87171), fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val mins = minutesText.toIntOrNull()?.coerceAtLeast(1) ?: 30
+                        onSubtractMinutes(mins)
+                    }
+                ) {
+                    Text("- Subtract", color = Color(0xFFFBBF24), fontSize = 12.sp)
+                }
+                Button(
+                    onClick = {
+                        val mins = minutesText.toIntOrNull()?.coerceAtLeast(1) ?: 30
+                        onAddMinutes(mins, noteText)
+                    }
+                ) {
+                    Text("+ Add Time", fontSize = 12.sp)
                 }
             }
         },
